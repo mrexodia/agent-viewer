@@ -2,8 +2,8 @@
 
 # Build all binaries
 build:
-	cd server && go build -o server .
-	cd watcher && go build -o watcher .
+	cd server && go build .
+	cd watcher && go build .
 
 # Run integration tests
 test: build
