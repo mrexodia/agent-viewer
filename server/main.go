@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -97,14 +98,20 @@ func (b *SSEBroadcaster) Broadcast(event LineEvent) {
 
 // SessionStore manages all sessions in memory
 type SessionStore struct {
-	sessions map[string]*Session
-	mu       sync.RWMutex
+	sessions        map[string]*Session
+	debug           bool
+	maxLinesPerSession int // 0 = unlimited
+	maxSessions     int    // 0 = unlimited
+	mu              sync.RWMutex
 }
 
 // NewSessionStore creates a new session store
-func NewSessionStore() *SessionStore {
+func NewSessionStore(debug bool, maxLinesPerSession, maxSessions int) *SessionStore {
 	return &SessionStore{
-		sessions: make(map[string]*Session),
+		sessions:           make(map[string]*Session),
+		debug:              debug,
+		maxLinesPerSession: maxLinesPerSession,
+		maxSessions:        maxSessions,
 	}
 }
 
@@ -113,6 +120,24 @@ func (s *SessionStore) AddLine(path, line string) int {
 	s.mu.Lock()
 	session, exists := s.sessions[path]
 	if !exists {
+		// Check max sessions limit
+		if s.maxSessions > 0 && len(s.sessions) >= s.maxSessions {
+			// Remove oldest session (by UpdatedAt)
+			var oldestPath string
+			var oldestTime time.Time
+			for p, sess := range s.sessions {
+				sess.mu.RLock()
+				if oldestPath == "" || sess.UpdatedAt.Before(oldestTime) {
+					oldestPath = p
+					oldestTime = sess.UpdatedAt
+				}
+				sess.mu.RUnlock()
+			}
+			if oldestPath != "" {
+				log.Printf("Memory limit: removing oldest session %s to make room", oldestPath)
+				delete(s.sessions, oldestPath)
+			}
+		}
 		session = &Session{
 			Path:       path,
 			Lines:      make([]string, 0),
@@ -132,18 +157,34 @@ func (s *SessionStore) AddLine(path, line string) int {
 	}
 	session.RawContent = append(session.RawContent, []byte(rawLine)...)
 
-	// Compute MD5 hash of the line for debugging
-	// Verify with: printf '{"event":"..."}\n' | md5
-	hash := md5.Sum([]byte(rawLine))
-	hashStr := hex.EncodeToString(hash[:])
-
 	// Strip trailing newline for Lines array storage
 	line = strings.TrimSuffix(line, "\n")
 	session.Lines = append(session.Lines, line)
+	
+	// Enforce max lines per session (keep newest lines)
+	if s.maxLinesPerSession > 0 && len(session.Lines) > s.maxLinesPerSession {
+		excess := len(session.Lines) - s.maxLinesPerSession
+		session.Lines = session.Lines[excess:]
+		// Trim RawContent proportionally (approximate)
+		// This is a simplification - in production you might want to recalculate
+		if len(session.RawContent) > 0 {
+			avgLineSize := len(session.RawContent) / (len(session.Lines) + excess)
+			bytesToTrim := excess * avgLineSize
+			if bytesToTrim < len(session.RawContent) {
+				session.RawContent = session.RawContent[bytesToTrim:]
+			}
+		}
+	}
+	
 	session.UpdatedAt = time.Now()
 	lineNum := len(session.Lines)
 
-	log.Printf("[%s] line %d md5=%s", path, lineNum, hashStr)
+	// Only log MD5 hashes in debug mode
+	if s.debug {
+		hash := md5.Sum([]byte(rawLine))
+		hashStr := hex.EncodeToString(hash[:])
+		log.Printf("[%s] line %d md5=%s", path, lineNum, hashStr)
+	}
 
 	return lineNum
 }
@@ -177,15 +218,17 @@ func (s *SessionStore) ListSessions() []Session {
 type Server struct {
 	store       *SessionStore
 	port        int
+	debug       bool
 	upgrader    websocket.Upgrader
 	broadcaster *SSEBroadcaster
 }
 
 // NewServer creates a new server instance
-func NewServer(port int) *Server {
+func NewServer(port int, debug bool, maxLinesPerSession, maxSessions int) *Server {
 	return &Server{
-		store:       NewSessionStore(),
+		store:       NewSessionStore(debug, maxLinesPerSession, maxSessions),
 		port:        port,
+		debug:       debug,
 		broadcaster: NewSSEBroadcaster(),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -269,6 +312,23 @@ func (s *Server) handleSessionContent(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 	if path == "" {
 		http.Error(w, "Session path required", http.StatusBadRequest)
+		return
+	}
+
+	// URL decode the path
+	decodedPath, err := url.PathUnescape(path)
+	if err != nil {
+		http.Error(w, "Invalid path encoding", http.StatusBadRequest)
+		return
+	}
+	path = decodedPath
+
+	// Normalize path separators to forward slashes
+	path = strings.ReplaceAll(path, "\\", "/")
+
+	// Security: reject path traversal attempts
+	if strings.Contains(path, "..") {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
 
@@ -388,9 +448,12 @@ func (s *Server) Start() error {
 
 func main() {
 	port := flag.Int("port", 7164, "HTTP server port")
+	debug := flag.Bool("debug", false, "Enable debug logging (MD5 hashes, etc.)")
+	maxLines := flag.Int("max-lines", 0, "Max lines per session (0 = unlimited)")
+	maxSessions := flag.Int("max-sessions", 0, "Max sessions to keep (0 = unlimited)")
 	flag.Parse()
 
-	server := NewServer(*port)
+	server := NewServer(*port, *debug, *maxLines, *maxSessions)
 	if err := server.Start(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

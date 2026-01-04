@@ -21,3 +21,4 @@ Completed epics with key learnings extracted:
 | Epic | Summary |
 |------|---------|
 | [archive/mvp.md](archive/mvp.md) | Real-time JSONL session viewer (watcher + server + web UI) |
+| [archive/mvp-review.md](archive/mvp-review.md) | Reliability fixes: race conditions, large lines, Windows support |

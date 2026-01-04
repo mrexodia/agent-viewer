@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -136,12 +137,24 @@ func findProjectRoot(t *testing.T) string {
 }
 
 func (e *TestEnv) Cleanup() {
+	// On Windows, go run spawns a child process that doesn't get killed.
+	// We need to use taskkill to kill processes by PID tree or use the built executable.
 	if e.watcher != nil && e.watcher.Process != nil {
-		e.watcher.Process.Kill()
+		if runtime.GOOS == "windows" {
+			// Kill the process tree on Windows
+			exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", e.watcher.Process.Pid)).Run()
+		} else {
+			e.watcher.Process.Kill()
+		}
 		e.watcher.Wait()
 	}
 	if e.server != nil && e.server.Process != nil {
-		e.server.Process.Kill()
+		if runtime.GOOS == "windows" {
+			// Kill the process tree on Windows
+			exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", e.server.Process.Pid)).Run()
+		} else {
+			e.server.Process.Kill()
+		}
 		e.server.Wait()
 	}
 	os.RemoveAll(e.testDir)
@@ -591,4 +604,177 @@ func TestNonJSONLFilesIgnored(t *testing.T) {
 	if sessions.Sessions[0].Path != "session.jsonl" {
 		t.Fatalf("Expected session.jsonl, got %s", sessions.Sessions[0].Path)
 	}
+}
+
+// TestLongJSONLLine tests that very long JSONL lines (>64KB) are handled correctly
+func TestLongJSONLLine(t *testing.T) {
+	env := NewTestEnv(t)
+	defer env.Cleanup()
+
+	// Create a very long line (100KB of data)
+	longContent := strings.Repeat("x", 100*1024)
+	longLine := fmt.Sprintf(`{"event":"long_test","data":"%s"}`, longContent)
+
+	// Setup
+	env.CreateTestFile("session.jsonl", []string{
+		`{"event":"start"}`,
+		longLine,
+		`{"event":"end"}`,
+	})
+
+	// Start system
+	env.StartServer()
+	env.StartWatcher(env.testDir)
+
+	// Wait for lines
+	if !env.WaitForLineCount("session.jsonl", 3, 3*time.Second) {
+		sessions := env.GetSessions()
+		t.Fatalf("Expected 3 lines (including long line), got %d", sessions.Sessions[0].LineCount)
+	}
+
+	// Verify the long line was received correctly
+	content := env.GetSessionContent("session.jsonl")
+	if len(content.Lines) != 3 {
+		t.Fatalf("Expected 3 lines, got %d", len(content.Lines))
+	}
+	
+	// Verify the long line content
+	if !strings.Contains(content.Lines[1], longContent[:100]) {
+		t.Fatal("Long line content was truncated or corrupted")
+	}
+}
+
+// TestAtomicFileWrite tests that files created via atomic rename are detected
+func TestAtomicFileWrite(t *testing.T) {
+	env := NewTestEnv(t)
+	defer env.Cleanup()
+
+	// Setup: empty directory
+	os.MkdirAll(env.testDir, 0755)
+
+	// Start system
+	env.StartServer()
+	env.StartWatcher(env.testDir)
+
+	// Verify empty
+	sessions := env.GetSessions()
+	if len(sessions.Sessions) != 0 {
+		t.Fatalf("Expected 0 sessions initially, got %d", len(sessions.Sessions))
+	}
+
+	// Simulate atomic write: write to temp file, then rename
+	tempFile := filepath.Join(env.testDir, "session.tmp")
+	finalFile := filepath.Join(env.testDir, "session.jsonl")
+	
+	// Write to temp file
+	if err := os.WriteFile(tempFile, []byte(`{"event":"atomic_test"}`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	
+	// Rename to final name (atomic operation)
+	if err := os.Rename(tempFile, finalFile); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify detected
+	if !env.WaitForSessionCount(1, 2*time.Second) {
+		sessions := env.GetSessions()
+		t.Fatalf("Atomic write not detected: expected 1 session, got %d", len(sessions.Sessions))
+	}
+
+	// Verify content
+	content := env.GetSessionContent("session.jsonl")
+	if len(content.Lines) != 1 {
+		t.Fatalf("Expected 1 line, got %d", len(content.Lines))
+	}
+	if !strings.Contains(content.Lines[0], "atomic_test") {
+		t.Fatalf("Expected atomic_test event, got: %s", content.Lines[0])
+	}
+}
+
+// TestPathTraversalRejected tests that path traversal attempts are rejected
+func TestPathTraversalRejected(t *testing.T) {
+	env := NewTestEnv(t)
+	defer env.Cleanup()
+
+	// Setup
+	env.CreateTestFile("session.jsonl", testDataSingle)
+
+	// Start system
+	env.StartServer()
+	env.StartWatcher(env.testDir)
+
+	// Wait for initial scan
+	if !env.WaitForLineCount("session.jsonl", 10, 2*time.Second) {
+		t.Fatal("Initial scan failed")
+	}
+
+	// Try path with encoded traversal - should get 400 Bad Request
+	// Using %2e%2e to encode ".." - the server should reject this after decoding
+	client := &http.Client{}
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://localhost:%d/api/sessions/foo%%2e%%2e/bar", env.port), nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("Expected 400 Bad Request for path with '..' after decoding, got %d", resp.StatusCode)
+	}
+}
+
+// TestVeryLongJSONLLine tests that very large JSONL lines (>1MB) are handled correctly
+// This verifies the dynamic buffer growth works without permanent allocation
+func TestVeryLongJSONLLine(t *testing.T) {
+	env := NewTestEnv(t)
+	defer env.Cleanup()
+
+	// Create a 5MB line (well beyond the old 64KB and 1MB limits)
+	longContent := strings.Repeat("x", 5*1024*1024)
+	longLine := fmt.Sprintf(`{"event":"very_long_test","data":"%s"}`, longContent)
+
+	t.Logf("Test line size: %d bytes (%.1f MB)", len(longLine), float64(len(longLine))/(1024*1024))
+
+	// Setup
+	env.CreateTestFile("session.jsonl", []string{
+		`{"event":"start"}`,
+		longLine,
+		`{"event":"end"}`,
+	})
+
+	// Start system
+	env.StartServer()
+	env.StartWatcher(env.testDir)
+
+	// Wait for lines (give extra time for large data)
+	if !env.WaitForLineCount("session.jsonl", 3, 10*time.Second) {
+		sessions := env.GetSessions()
+		lineCount := 0
+		if len(sessions.Sessions) > 0 {
+			lineCount = sessions.Sessions[0].LineCount
+		}
+		t.Fatalf("Expected 3 lines (including 5MB line), got %d", lineCount)
+	}
+
+	// Verify the long line was received correctly
+	content := env.GetSessionContent("session.jsonl")
+	if len(content.Lines) != 3 {
+		t.Fatalf("Expected 3 lines, got %d", len(content.Lines))
+	}
+
+	// Verify the long line content is intact
+	if len(content.Lines[1]) < 5*1024*1024 {
+		t.Fatalf("Long line was truncated: expected >5MB, got %d bytes", len(content.Lines[1]))
+	}
+
+	// Verify start and end of content
+	if !strings.Contains(content.Lines[1], `"event":"very_long_test"`) {
+		t.Fatal("Long line missing event field")
+	}
+	if !strings.HasSuffix(content.Lines[1], `"}`) {
+		t.Fatal("Long line was truncated at the end")
+	}
+
+	t.Logf("Successfully transferred 5MB line")
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -105,13 +106,16 @@ func (w *Watcher) IsConnected() bool {
 	return w.conn != nil
 }
 
+// ErrNotConnected is returned when trying to send while disconnected
+var ErrNotConnected = fmt.Errorf("not connected to server")
+
 // sendLine sends a single line message (internal, must hold connMu)
 func (w *Watcher) sendLine(msg LineMessage) error {
 	w.connMu.Lock()
 	defer w.connMu.Unlock()
 
 	if w.conn == nil {
-		return nil // Not connected
+		return ErrNotConnected
 	}
 	return w.conn.WriteJSON(msg)
 }
@@ -123,22 +127,27 @@ func (w *Watcher) batchSender() {
 
 	var batch []LineMessage
 	const maxBuffer = 10000 // Max lines to buffer during disconnect
+	var totalDropped int64  // Track total dropped lines for observability
 
 	for {
 		select {
 		case msg := <-w.lineQueue:
 			batch = append(batch, msg)
-			// Limit buffer size during disconnect
+			// Limit buffer size during disconnect - drop oldest lines
 			if len(batch) > maxBuffer {
-				log.Printf("Buffer full, dropping oldest %d lines", len(batch)-maxBuffer)
-				batch = batch[len(batch)-maxBuffer:]
+				dropped := len(batch) - maxBuffer
+				totalDropped += int64(dropped)
+				log.Printf("Backpressure: buffer full, dropping %d oldest lines (total dropped: %d)", dropped, totalDropped)
+				batch = batch[dropped:]
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
 				failed := false
 				for _, msg := range batch {
 					if err := w.sendLine(msg); err != nil {
-						log.Printf("Error sending line: %v", err)
+						if err != ErrNotConnected {
+							log.Printf("Error sending line: %v", err)
+						}
 						failed = true
 						break
 					}
@@ -168,6 +177,12 @@ func (w *Watcher) batchSender() {
 	}
 }
 
+// normalizePath converts OS-specific path separators to forward slashes
+// for consistent cross-platform path handling
+func normalizePath(path string) string {
+	return strings.ReplaceAll(path, "\\", "/")
+}
+
 // scanDirectory finds all .jsonl files and reads them
 func (w *Watcher) scanDirectory() error {
 	return filepath.Walk(w.watchDir, func(path string, info os.FileInfo, err error) error {
@@ -189,6 +204,8 @@ func (w *Watcher) scanDirectory() error {
 			log.Printf("Error getting relative path for %s: %v", path, err)
 			return nil
 		}
+		// Normalize to forward slashes for cross-platform consistency
+		relPath = normalizePath(relPath)
 
 		if err := w.readFile(path, relPath); err != nil {
 			log.Printf("Error reading file %s: %v", path, err)
@@ -230,30 +247,48 @@ func (w *Watcher) readFile(absPath, relPath string) error {
 	}
 	w.filesMu.Unlock()
 
-	scanner := bufio.NewScanner(file)
+	// Use bufio.Reader for unlimited line length support
+	// bufio.Scanner has a max token size, but ReadString('\n') grows dynamically
+	reader := bufio.NewReader(file)
+	
 	lineNum := 0
 	newLines := 0
-	for scanner.Scan() {
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && err.Error() != "EOF" && line == "" {
+			return err
+		}
+		if line == "" {
+			break // EOF with no more data
+		}
+		
 		lineNum++
 		w.filesMu.RLock()
 		lastLine := state.LastLine
 		w.filesMu.RUnlock()
 
 		if lineNum <= lastLine {
+			if err != nil {
+				break // EOF
+			}
 			continue // Skip already sent lines
 		}
 
-		line := scanner.Text()
+		// Ensure line ends with newline (last line might not)
+		if !strings.HasSuffix(line, "\n") {
+			line = line + "\n"
+		}
+		
 		w.lineQueue <- LineMessage{
 			Type: "line",
 			Path: relPath,
-			Line: line + "\n",
+			Line: line,
 		}
 		newLines++
-	}
-
-	if err := scanner.Err(); err != nil {
-		return err
+		
+		if err != nil {
+			break // EOF after processing last line
+		}
 	}
 
 	// Update state
@@ -318,6 +353,8 @@ func (w *Watcher) addDirectoryRecursive(dir string) {
 				log.Printf("Error getting relative path for %s: %v", path, err)
 				return nil
 			}
+			// Normalize to forward slashes for cross-platform consistency
+			relPath = normalizePath(relPath)
 			if err := w.readFile(path, relPath); err != nil {
 				log.Printf("Error reading %s: %v", path, err)
 			}
@@ -335,25 +372,40 @@ func (w *Watcher) handleFSEvents() {
 				return
 			}
 
-			// Only care about writes and creates for .jsonl files
-			if !strings.HasSuffix(event.Name, ".jsonl") {
-				// Check if it's a new directory
-				if event.Op&fsnotify.Create != 0 {
-					info, err := os.Stat(event.Name)
-					if err == nil && info.IsDir() {
-						// Recursively add directory and scan for .jsonl files
-						w.addDirectoryRecursive(event.Name)
-					}
+			// Handle directory events first (for any path)
+			if event.Op&fsnotify.Create != 0 {
+				info, err := os.Stat(event.Name)
+				if err == nil && info.IsDir() {
+					// Recursively add directory and scan for .jsonl files
+					w.addDirectoryRecursive(event.Name)
+					continue
 				}
+			}
+
+			// Only care about .jsonl files from here on
+			if !strings.HasSuffix(event.Name, ".jsonl") {
 				continue
 			}
 
-			if event.Op&(fsnotify.Write|fsnotify.Create) != 0 {
+			// Handle Write, Create, and Rename events for .jsonl files
+			// Rename is important for atomic writes (temp file -> final name)
+			// Chmod can also indicate file availability on some systems
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Chmod) != 0 {
+				// For Rename, check if the file now exists (it was renamed TO this name)
+				if event.Op&fsnotify.Rename != 0 {
+					if _, err := os.Stat(event.Name); err != nil {
+						// File was renamed away, not to this name
+						continue
+					}
+				}
+
 				relPath, err := filepath.Rel(w.watchDir, event.Name)
 				if err != nil {
 					log.Printf("Error getting relative path: %v", err)
 					continue
 				}
+				// Normalize to forward slashes for cross-platform consistency
+				relPath = normalizePath(relPath)
 
 				if err := w.readNewLines(event.Name, relPath); err != nil {
 					log.Printf("Error reading %s: %v", event.Name, err)
@@ -391,6 +443,16 @@ func (w *Watcher) Run() error {
 	// Start batch sender
 	go w.batchSender()
 
+	// Setup filesystem watcher FIRST so we catch any changes during initial scan
+	if err := w.setupFSWatcher(); err != nil {
+		return err
+	}
+	defer w.fsWatcher.Close()
+
+	// Start handling filesystem events BEFORE initial scan
+	// This ensures we don't miss events that happen during the scan
+	go w.handleFSEvents()
+
 	// Initial scan
 	log.Printf("Scanning directory: %s", w.watchDir)
 	if err := w.scanDirectory(); err != nil {
@@ -400,18 +462,7 @@ func (w *Watcher) Run() error {
 	// Wait for batch to flush
 	time.Sleep(time.Duration(w.batchMs*2) * time.Millisecond)
 
-	log.Printf("Initial scan complete.")
-
-	// Setup filesystem watcher
-	if err := w.setupFSWatcher(); err != nil {
-		return err
-	}
-	defer w.fsWatcher.Close()
-
-	log.Printf("Watching for changes... (Ctrl+C to stop)")
-
-	// Handle filesystem events in background
-	go w.handleFSEvents()
+	log.Printf("Initial scan complete. Watching for changes... (Ctrl+C to stop)")
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
