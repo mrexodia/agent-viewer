@@ -12,8 +12,7 @@ devdocs/
 │   ├── <task-name>.md
 └── <task-name>/        # In-progress tasks
     ├── design.md
-    ├── plan.md
-    └── progress.md
+    └── plan.md
 ```
 
 ## Task Tracking Methodology
@@ -25,14 +24,11 @@ For larger multi-phase tasks, create a subdirectory with:
 ```
 devdocs/<task-name>/
 ├── design.md     # Optional: user-provided design document
-├── plan.md       # Goals, phases, required APIs, testing strategy
-└── progress.md   # Current status, completed items, blockers
+└── plan.md       # Goals, phases, required APIs, testing strategy
 ```
 
 **During development:**
-1. Read `progress.md` to find current state
-2. Work on incomplete items
-3. Update `progress.md` as you complete items (use checkboxes)
+1. Use `bd` for task tracking
 
 ### Completed Tasks → Archive
 
@@ -43,9 +39,10 @@ When a task is complete and the user asks you to archive:
    - Key architectural decisions
    - Technical insights and gotchas
    - API summary (what was built)
+   - If the design document exists, integrate it into the existing repository documentation
    - References to related docs
 
-2. **Delete the task directory** (`plan.md`, `progress.md`)
+2. **Delete the task directory** (`plan.md`)
    - Detailed progress is preserved in git history
    - Only essential knowledge lives in the archive
 
@@ -68,18 +65,17 @@ These are **reference documents**, not progress trackers. They capture:
 **Important:** Task creation and archival are **user-initiated**. The agent should not create new task directories or archive completed tasks without explicit user request.
 
 **When working on an existing task:**
-1. Read `progress.md` to find current state
-2. Work on incomplete items
-3. Update `progress.md` as work progresses
-4. Suggest when a task might be ready for archival (but don't archive without asking)
+1. Use `bd` to work on incomplete items
+2. Suggest when a task might be ready for archival (but don't archive without asking)
 
 **When user asks to create a new task:**
 1. Create `devdocs/<task-name>/plan.md` with goals and phases
-2. Create `devdocs/<task-name>/progress.md` for tracking
+2. Create issues in `bd` for tracking (with an epic for the <task-name>)
 
 **When user asks to archive a completed task:**
-1. Create `archive/<task-name>.md` with key learnings
-2. Delete the task directory (plan.md, progress.md)
+1. Make sure all the issues are closed
+2. Create `archive/<task-name>.md` with key learnings
+3. Delete the task directory (plan.md)
 
 **Looking up past decisions:**
 1. Check `archive/` for relevant completed tasks
