@@ -1,5 +1,32 @@
 # Agent Instructions
 
+## Project Commands
+
+```bash
+# Build everything
+make build
+
+# Run tests
+make test          # verbose
+make test-quick    # quiet
+
+# Run server (default port 8080)
+make server
+# Or with custom port:
+cd server && ./server --port 9000
+
+# Run watcher
+make watcher WATCH_DIR=/path/to/sessions
+# Or directly:
+cd watcher && ./watcher --watch ~/.pi/agent/sessions --server ws://localhost:8080/watch
+
+# Manual testing
+# 1. Start server in one terminal
+# 2. Start watcher in another terminal  
+# 3. Open http://localhost:8080 in browser
+# 4. Append to a .jsonl file and watch it appear
+```
+
 ## Issue Tracking (bd)
 
 This project uses **bd (beads)** for issue tracking. Run `bd prime` for workflow context and commands.

@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Session Viewer</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #16213e;
+            padding: 20px;
+            border-bottom: 1px solid #0f3460;
+        }
+
+        header h1 {
+            font-size: 1.5rem;
+            font-weight: 500;
+        }
+
+        .sessions-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 0;
+            border-bottom: 1px solid #0f3460;
+        }
+
+        .sessions-header h2 {
+            font-size: 1.1rem;
+            font-weight: 500;
+            color: #aaa;
+        }
+
+        .session-list {
+            list-style: none;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .session-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 15px;
+            border-bottom: 1px solid #0f3460;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .session-item:hover {
+            background: #16213e;
+        }
+
+        .session-item.selected {
+            background: #0f3460;
+        }
+
+        .live-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 12px;
+            background: #555;
+        }
+
+        .live-indicator.active {
+            background: #4ade80;
+            box-shadow: 0 0 8px #4ade80;
+        }
+
+        .session-path {
+            flex: 1;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.9rem;
+        }
+
+        .session-meta {
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        .viewer {
+            margin-top: 20px;
+        }
+
+        .viewer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-bottom: none;
+            border-radius: 6px 6px 0 0;
+        }
+
+        .viewer-path {
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.9rem;
+        }
+
+        .viewer-status {
+            font-size: 0.8rem;
+            color: #4ade80;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            background: #16213e;
+            border-left: 1px solid #0f3460;
+            border-right: 1px solid #0f3460;
+        }
+
+        .tab {
+            padding: 8px 20px;
+            cursor: pointer;
+            color: #888;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+        }
+
+        .tab:hover {
+            color: #ccc;
+        }
+
+        .tab.active {
+            color: #4ade80;
+            border-bottom-color: #4ade80;
+        }
+
+        .tab-content {
+            display: none;
+            background: #0d1117;
+            border: 1px solid #0f3460;
+            border-top: none;
+            height: 500px;
+            overflow-y: auto;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Raw view */
+        .raw-content {
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+
+        .line {
+            display: flex;
+            padding: 2px 10px;
+        }
+
+        .line:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .line-num {
+            color: #555;
+            min-width: 50px;
+            text-align: right;
+            padding-right: 15px;
+            user-select: none;
+        }
+
+        .line-content {
+            color: #c9d1d9;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* Pretty view */
+        .pretty-content {
+            padding: 15px;
+        }
+
+        .msg {
+            margin-bottom: 15px;
+            border-radius: 8px;
+            padding: 12px;
+        }
+
+        .msg-user {
+            background: #1e3a5f;
+            margin-left: 40px;
+        }
+
+        .msg-assistant {
+            background: #1a2e1a;
+            margin-right: 40px;
+        }
+
+        .msg-system {
+            background: #2d2d3d;
+            text-align: center;
+            font-size: 0.8rem;
+            color: #888;
+            padding: 8px;
+        }
+
+        .msg-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.75rem;
+            color: #888;
+        }
+
+        .msg-role {
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .msg-role.user { color: #60a5fa; }
+        .msg-role.assistant { color: #4ade80; }
+
+        .msg-text {
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+
+        .msg-thinking {
+            background: rgba(0,0,0,0.2);
+            border-left: 3px solid #f59e0b;
+            padding: 8px 12px;
+            margin: 8px 0;
+            font-size: 0.85rem;
+            color: #d4d4d4;
+            font-style: italic;
+        }
+
+        .msg-thinking-header {
+            color: #f59e0b;
+            font-size: 0.75rem;
+            margin-bottom: 4px;
+            font-style: normal;
+        }
+
+        .tool-call {
+            background: #1e1e2e;
+            border: 1px solid #3b3b5c;
+            border-radius: 6px;
+            padding: 10px;
+            margin: 8px 0;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.8rem;
+        }
+
+        .tool-call-header {
+            color: #c792ea;
+            margin-bottom: 6px;
+        }
+
+        .tool-call-args {
+            color: #89ddff;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .tool-result {
+            background: #1a1a2a;
+            border: 1px solid #2d4a2d;
+            border-radius: 6px;
+            padding: 10px;
+            margin: 8px 0;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.8rem;
+        }
+
+        .tool-result-header {
+            color: #4ade80;
+            margin-bottom: 6px;
+        }
+
+        .tool-result-content {
+            color: #a0a0a0;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .tool-result.error {
+            border-color: #4a2d2d;
+        }
+
+        .tool-result.error .tool-result-header {
+            color: #f87171;
+        }
+
+        .usage-info {
+            font-size: 0.7rem;
+            color: #666;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #333;
+        }
+
+        .msg-error {
+            color: #f87171;
+            font-size: 0.85rem;
+            margin-top: 8px;
+            padding: 6px 10px;
+            background: rgba(248, 113, 113, 0.1);
+            border-radius: 4px;
+        }
+
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 300px;
+            color: #555;
+        }
+
+        .empty-state svg {
+            width: 48px;
+            height: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .viewer-footer {
+            display: flex;
+            align-items: center;
+            padding: 10px 15px;
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        .viewer-footer input {
+            margin-right: 8px;
+        }
+
+        .error-banner {
+            background: #7f1d1d;
+            color: #fca5a5;
+            padding: 10px 15px;
+            text-align: center;
+            display: none;
+        }
+
+        .error-banner.visible {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-banner" id="errorBanner">
+        Connection lost. Retrying...
+    </div>
+
+    <header>
+        <div class="container">
+            <h1>Agent Session Viewer</h1>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="sessions">
+            <div class="sessions-header">
+                <h2>Sessions</h2>
+                <span id="sessionCount">0 sessions</span>
+            </div>
+            <ul class="session-list" id="sessionList">
+                <li class="empty-state">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <p>No sessions yet</p>
+                </li>
+            </ul>
+        </section>
+
+        <section class="viewer" id="viewer" style="display: none;">
+            <div class="viewer-header">
+                <span class="viewer-path" id="viewerPath"></span>
+                <span class="viewer-status" id="viewerStatus">●</span>
+            </div>
+            <div class="tabs">
+                <div class="tab active" data-tab="pretty">Pretty</div>
+                <div class="tab" data-tab="raw">Raw</div>
+            </div>
+            <div id="prettyView" class="tab-content active pretty-content"></div>
+            <div id="rawView" class="tab-content raw-content"></div>
+            <div class="viewer-footer">
+                <input type="checkbox" id="autoScroll" checked>
+                <label for="autoScroll">Auto-scroll</label>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // State
+        let sessions = [];
+        let selectedSession = null;
+        let autoScroll = true;
+        let eventSource = null;
+        let lastActivity = 0;
+        let currentTab = 'pretty';
+        let rawLines = [];
+        let parsedMessages = [];
+
+        // DOM elements
+        const sessionList = document.getElementById('sessionList');
+        const sessionCount = document.getElementById('sessionCount');
+        const viewer = document.getElementById('viewer');
+        const viewerPath = document.getElementById('viewerPath');
+        const viewerStatus = document.getElementById('viewerStatus');
+        const prettyView = document.getElementById('prettyView');
+        const rawView = document.getElementById('rawView');
+        const autoScrollCheckbox = document.getElementById('autoScroll');
+        const errorBanner = document.getElementById('errorBanner');
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                tab.classList.add('active');
+                currentTab = tab.dataset.tab;
+                document.getElementById(currentTab + 'View').classList.add('active');
+            });
+        });
+
+        // Fetch sessions from API
+        async function fetchSessions() {
+            try {
+                const response = await fetch('/api/sessions');
+                const data = await response.json();
+                sessions = data.sessions || [];
+                renderSessionList();
+                errorBanner.classList.remove('visible');
+            } catch (error) {
+                console.error('Failed to fetch sessions:', error);
+                errorBanner.classList.add('visible');
+            }
+        }
+
+        // Render the session list
+        function renderSessionList() {
+            sessionCount.textContent = `${sessions.length} session${sessions.length !== 1 ? 's' : ''}`;
+
+            if (sessions.length === 0) {
+                sessionList.innerHTML = `
+                    <li class="empty-state">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <p>No sessions yet</p>
+                    </li>
+                `;
+                return;
+            }
+
+            sessionList.innerHTML = sessions.map(session => {
+                const isActive = isSessionActive(session.updated_at);
+                const timeAgo = formatTimeAgo(session.updated_at);
+                const isSelected = selectedSession === session.path;
+
+                return `
+                    <li class="session-item${isSelected ? ' selected' : ''}" data-path="${escapeHtml(session.path)}">
+                        <span class="live-indicator${isActive ? ' active' : ''}"></span>
+                        <span class="session-path">${escapeHtml(session.path)}</span>
+                        <span class="session-meta">${session.line_count} lines · ${timeAgo}</span>
+                    </li>
+                `;
+            }).join('');
+
+            sessionList.querySelectorAll('.session-item').forEach(item => {
+                item.addEventListener('click', () => selectSession(item.dataset.path));
+            });
+        }
+
+        function isSessionActive(updatedAt) {
+            if (!updatedAt) return false;
+            const updated = new Date(updatedAt);
+            const now = new Date();
+            return (now - updated) < 5000;
+        }
+
+        function formatTimeAgo(dateStr) {
+            if (!dateStr) return 'never';
+            const date = new Date(dateStr);
+            const now = new Date();
+            const seconds = Math.floor((now - date) / 1000);
+
+            if (seconds < 5) return 'now';
+            if (seconds < 60) return `${seconds}s ago`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            return `${Math.floor(seconds / 86400)}d ago`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Add a raw line
+        function addRawLine(lineNum, content) {
+            rawLines.push({ num: lineNum, content });
+            const lineEl = document.createElement('div');
+            lineEl.className = 'line';
+            lineEl.innerHTML = `
+                <span class="line-num">${lineNum}</span>
+                <span class="line-content">${escapeHtml(content)}</span>
+            `;
+            rawView.appendChild(lineEl);
+        }
+
+        // Parse and add to pretty view
+        function addPrettyLine(content) {
+            try {
+                const data = JSON.parse(content);
+                renderPrettyEvent(data);
+            } catch (e) {
+                // Not valid JSON, skip
+            }
+        }
+
+        // Render a parsed event to pretty view
+        function renderPrettyEvent(event) {
+            const type = event.type;
+            
+            if (type === 'session') {
+                const el = document.createElement('div');
+                el.className = 'msg msg-system';
+                el.innerHTML = `Session started · ${event.cwd || ''} · ${formatTime(event.timestamp)}`;
+                prettyView.appendChild(el);
+            } else if (type === 'model_change') {
+                const el = document.createElement('div');
+                el.className = 'msg msg-system';
+                el.innerHTML = `Model: ${event.provider}/${event.modelId}`;
+                prettyView.appendChild(el);
+            } else if (type === 'message') {
+                renderMessage(event.message, event.timestamp);
+            }
+        }
+
+        // Render a message (user, assistant, toolResult)
+        function renderMessage(msg, timestamp) {
+            if (!msg) return;
+            
+            const role = msg.role;
+            
+            if (role === 'user') {
+                const el = document.createElement('div');
+                el.className = 'msg msg-user';
+                el.innerHTML = `
+                    <div class="msg-header">
+                        <span class="msg-role user">User</span>
+                        <span>${formatTime(timestamp)}</span>
+                    </div>
+                    <div class="msg-text">${escapeHtml(getTextContent(msg.content))}</div>
+                `;
+                prettyView.appendChild(el);
+            } else if (role === 'assistant') {
+                const el = document.createElement('div');
+                el.className = 'msg msg-assistant';
+                
+                let html = `
+                    <div class="msg-header">
+                        <span class="msg-role assistant">Assistant</span>
+                        <span>${msg.model || ''} · ${formatTime(timestamp)}</span>
+                    </div>
+                `;
+                
+                // Process content array
+                if (Array.isArray(msg.content)) {
+                    for (const part of msg.content) {
+                        if (part.type === 'thinking' && part.thinking) {
+                            html += `
+                                <div class="msg-thinking">
+                                    <div class="msg-thinking-header">💭 Thinking</div>
+                                    ${escapeHtml(part.thinking)}
+                                </div>
+                            `;
+                        } else if (part.type === 'text' && part.text) {
+                            html += `<div class="msg-text">${escapeHtml(part.text)}</div>`;
+                        } else if (part.type === 'toolCall') {
+                            html += `
+                                <div class="tool-call">
+                                    <div class="tool-call-header">🔧 ${escapeHtml(part.name)}</div>
+                                    <div class="tool-call-args">${escapeHtml(JSON.stringify(part.arguments, null, 2))}</div>
+                                </div>
+                            `;
+                        }
+                    }
+                }
+                
+                // Error/abort message
+                if (msg.stopReason === 'aborted') {
+                    html += `
+                        <div class="msg-error">
+                            ⚠️ ${escapeHtml(msg.errorMessage || 'Aborted')}
+                        </div>
+                    `;
+                }
+                
+                // Usage info
+                if (msg.usage && msg.usage.totalTokens > 0) {
+                    const u = msg.usage;
+                    html += `
+                        <div class="usage-info">
+                            Tokens: ${u.input || 0} in / ${u.output || 0} out
+                            ${u.cost && u.cost.total ? ` · $${u.cost.total.toFixed(4)}` : ''}
+                        </div>
+                    `;
+                }
+                
+                el.innerHTML = html;
+                prettyView.appendChild(el);
+            } else if (role === 'toolResult') {
+                const el = document.createElement('div');
+                el.className = `tool-result${msg.isError ? ' error' : ''}`;
+                el.innerHTML = `
+                    <div class="tool-result-header">${msg.isError ? '❌' : '✅'} ${escapeHtml(msg.toolName || 'Tool Result')}</div>
+                    <div class="tool-result-content">${escapeHtml(getTextContent(msg.content))}</div>
+                `;
+                prettyView.appendChild(el);
+            }
+        }
+
+        // Extract text from content array
+        function getTextContent(content) {
+            if (typeof content === 'string') return content;
+            if (Array.isArray(content)) {
+                return content
+                    .filter(c => c.type === 'text')
+                    .map(c => c.text)
+                    .join('\n');
+            }
+            return '';
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return '';
+            try {
+                const d = new Date(timestamp);
+                return d.toLocaleTimeString();
+            } catch {
+                return '';
+            }
+        }
+
+        // Handle new line from SSE
+        function handleNewLine(lineNum, content) {
+            addRawLine(lineNum, content);
+            addPrettyLine(content);
+            
+            lastActivity = Date.now();
+            updateStatusIndicator();
+            
+            if (autoScroll) {
+                const activeView = currentTab === 'pretty' ? prettyView : rawView;
+                activeView.scrollTop = activeView.scrollHeight;
+            }
+        }
+
+        function updateStatusIndicator() {
+            const isActive = (Date.now() - lastActivity) < 5000;
+            viewerStatus.style.color = isActive ? '#4ade80' : '#555';
+            viewerStatus.title = isActive ? 'Receiving updates' : 'Idle';
+        }
+
+        // Connect to SSE stream
+        function connectToStream(path) {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            rawLines = [];
+            parsedMessages = [];
+            rawView.innerHTML = '';
+            prettyView.innerHTML = '';
+            
+            const streamUrl = `/api/sessions/${encodeURIComponent(path)}/stream`;
+            eventSource = new EventSource(streamUrl);
+
+            eventSource.addEventListener('line', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    handleNewLine(data.line_num, data.line);
+                } catch (err) {
+                    console.error('Failed to parse SSE event:', err);
+                }
+            });
+
+            eventSource.onerror = (e) => {
+                console.error('SSE connection error:', e);
+                viewerStatus.style.color = '#ef4444';
+                viewerStatus.title = 'Connection error';
+                
+                setTimeout(() => {
+                    if (selectedSession === path) {
+                        connectToStream(path);
+                    }
+                }, 2000);
+            };
+
+            eventSource.onopen = () => {
+                viewerStatus.style.color = '#4ade80';
+            };
+        }
+
+        function selectSession(path) {
+            selectedSession = path;
+            viewerPath.textContent = path;
+            viewer.style.display = 'block';
+            renderSessionList();
+            connectToStream(path);
+        }
+
+        autoScrollCheckbox.addEventListener('change', (e) => {
+            autoScroll = e.target.checked;
+        });
+
+        // Detect manual scroll
+        [prettyView, rawView].forEach(view => {
+            view.addEventListener('scroll', () => {
+                const isAtBottom = view.scrollHeight - view.scrollTop <= view.clientHeight + 50;
+                if (!isAtBottom && autoScroll) {
+                    autoScroll = false;
+                    autoScrollCheckbox.checked = false;
+                } else if (isAtBottom && !autoScroll) {
+                    autoScroll = true;
+                    autoScrollCheckbox.checked = true;
+                }
+            });
+        });
+
+        setInterval(updateStatusIndicator, 1000);
+
+        // Global stream for session list updates
+        let globalEventSource = null;
+        function connectGlobalStream() {
+            if (globalEventSource) {
+                globalEventSource.close();
+            }
+
+            globalEventSource = new EventSource('/api/stream');
+            
+            globalEventSource.addEventListener('line', (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    const existingIdx = sessions.findIndex(s => s.path === data.path);
+                    if (existingIdx >= 0) {
+                        sessions[existingIdx].line_count = data.line_num;
+                        sessions[existingIdx].updated_at = new Date().toISOString();
+                    } else {
+                        sessions.push({
+                            path: data.path,
+                            line_count: data.line_num,
+                            updated_at: new Date().toISOString()
+                        });
+                    }
+                    renderSessionList();
+                } catch (err) {
+                    console.error('Failed to parse global SSE event:', err);
+                }
+            });
+
+            globalEventSource.onerror = () => {
+                setTimeout(connectGlobalStream, 2000);
+            };
+        }
+
+        fetchSessions();
+        connectGlobalStream();
+        setInterval(fetchSessions, 30000);
+    </script>
+</body>
+</html>
