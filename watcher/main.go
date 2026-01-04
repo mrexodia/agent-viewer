@@ -126,20 +126,11 @@ func (w *Watcher) batchSender() {
 	defer ticker.Stop()
 
 	var batch []LineMessage
-	const maxBuffer = 10000 // Max lines to buffer during disconnect
-	var totalDropped int64  // Track total dropped lines for observability
 
 	for {
 		select {
 		case msg := <-w.lineQueue:
 			batch = append(batch, msg)
-			// Limit buffer size during disconnect - drop oldest lines
-			if len(batch) > maxBuffer {
-				dropped := len(batch) - maxBuffer
-				totalDropped += int64(dropped)
-				log.Printf("Backpressure: buffer full, dropping %d oldest lines (total dropped: %d)", dropped, totalDropped)
-				batch = batch[dropped:]
-			}
 		case <-ticker.C:
 			if len(batch) > 0 {
 				failed := false
