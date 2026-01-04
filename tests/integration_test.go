@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -137,24 +136,14 @@ func findProjectRoot(t *testing.T) string {
 }
 
 func (e *TestEnv) Cleanup() {
-	// On Windows, go run spawns a child process that doesn't get killed.
-	// We need to use taskkill to kill processes by PID tree or use the built executable.
-	if e.watcher != nil && e.watcher.Process != nil {
-		if runtime.GOOS == "windows" {
-			// Kill the process tree on Windows
-			exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", e.watcher.Process.Pid)).Run()
-		} else {
-			e.watcher.Process.Kill()
-		}
+	// go run spawns a child process that doesn't get killed by Process.Kill().
+	// We need to kill the process group/tree.
+	killProcessTree(e.watcher)
+	if e.watcher != nil {
 		e.watcher.Wait()
 	}
-	if e.server != nil && e.server.Process != nil {
-		if runtime.GOOS == "windows" {
-			// Kill the process tree on Windows
-			exec.Command("taskkill", "/F", "/T", "/PID", fmt.Sprintf("%d", e.server.Process.Pid)).Run()
-		} else {
-			e.server.Process.Kill()
-		}
+	killProcessTree(e.server)
+	if e.server != nil {
 		e.server.Wait()
 	}
 	os.RemoveAll(e.testDir)
@@ -166,6 +155,8 @@ func (e *TestEnv) StartServer() {
 	// Use 'go run' for cross-platform compatibility
 	e.server = exec.Command("go", "run", ".", "--port", fmt.Sprintf("%d", e.port))
 	e.server.Dir = e.serverDir
+	// Create new process group so we can kill all child processes
+	setupProcessGroup(e.server)
 	if err := e.server.Start(); err != nil {
 		e.t.Fatalf("Failed to start server: %v", err)
 	}
@@ -189,6 +180,8 @@ func (e *TestEnv) StartWatcher(watchDir string) {
 	serverURL := fmt.Sprintf("ws://localhost:%d/watch", e.port)
 	e.watcher = exec.Command("go", "run", ".", "--watch", watchDir, "--server", serverURL)
 	e.watcher.Dir = e.watcherDir
+	// Create new process group so we can kill all child processes
+	setupProcessGroup(e.watcher)
 	if err := e.watcher.Start(); err != nil {
 		e.t.Fatalf("Failed to start watcher: %v", err)
 	}
