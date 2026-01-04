@@ -4,13 +4,14 @@
 
 | File | Purpose |
 |------|---------|
+| [design.md](design.md) | Full system architecture, protocols, data structures |
 | [project-overview.md](project-overview.md) | Architecture, commands, key docs |
 
 ## Active Epics
 
 | Epic | Summary |
 |------|---------|
-| [mvp/](mvp/) | MVP implementation - real-time JSONL viewer |
+| — | (none active) |
 
 ## Archive
 
@@ -18,4 +19,4 @@ Completed epics with key learnings extracted:
 
 | Epic | Summary |
 |------|---------|
-| — | (none yet) |
+| [archive/mvp.md](archive/mvp.md) | Real-time JSONL session viewer (watcher + server + web UI) |
