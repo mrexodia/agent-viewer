@@ -5,6 +5,7 @@ package tests
 import (
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // setupProcessGroup sets up a new process group for the command
@@ -15,7 +16,14 @@ func setupProcessGroup(cmd *exec.Cmd) {
 // killProcessTree kills the process and all its children
 func killProcessTree(cmd *exec.Cmd) {
 	if cmd != nil && cmd.Process != nil {
-		// Kill the process group (negative PID)
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		pgid, err := syscall.Getpgid(cmd.Process.Pid)
+		if err == nil {
+			// Kill the process group
+			syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+		// Also try killing the process directly
+		cmd.Process.Kill()
+		// Give it a moment to die
+		time.Sleep(50 * time.Millisecond)
 	}
 }
