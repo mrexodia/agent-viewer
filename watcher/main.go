@@ -52,7 +52,7 @@ func NewWatcher(watchDir, serverURL string, batchMs int) *Watcher {
 		serverURL: serverURL,
 		batchMs:   batchMs,
 		files:     make(map[string]*FileState),
-		lineQueue: make(chan LineMessage, 10000),
+		lineQueue: make(chan LineMessage, 1000000), // Large buffer - never block file reading
 		done:      make(chan struct{}),
 	}
 }
@@ -463,7 +463,12 @@ func (w *Watcher) Run() error {
 	log.Printf("Shutting down...")
 	close(w.done)
 
-	// Give batch sender time to finish
+	// Wait for batch sender to drain all queued messages
+	// This ensures no data is lost on shutdown
+	for len(w.lineQueue) > 0 {
+		time.Sleep(time.Duration(w.batchMs) * time.Millisecond)
+	}
+	// One more flush cycle to ensure batch is sent
 	time.Sleep(time.Duration(w.batchMs*2) * time.Millisecond)
 
 	return nil

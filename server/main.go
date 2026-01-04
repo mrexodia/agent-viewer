@@ -87,31 +87,24 @@ func (b *SSEBroadcaster) Broadcast(event LineEvent) {
 	for client := range b.clients {
 		// Send to clients watching this specific path or all paths (empty path)
 		if client.path == "" || client.path == event.Path {
-			select {
-			case client.events <- event:
-			default:
-				// Client buffer full, skip
-			}
+			// Block until we can send - never drop events
+			client.events <- event
 		}
 	}
 }
 
 // SessionStore manages all sessions in memory
 type SessionStore struct {
-	sessions        map[string]*Session
-	debug           bool
-	maxLinesPerSession int // 0 = unlimited
-	maxSessions     int    // 0 = unlimited
-	mu              sync.RWMutex
+	sessions map[string]*Session
+	debug    bool
+	mu       sync.RWMutex
 }
 
 // NewSessionStore creates a new session store
-func NewSessionStore(debug bool, maxLinesPerSession, maxSessions int) *SessionStore {
+func NewSessionStore(debug bool) *SessionStore {
 	return &SessionStore{
-		sessions:           make(map[string]*Session),
-		debug:              debug,
-		maxLinesPerSession: maxLinesPerSession,
-		maxSessions:        maxSessions,
+		sessions: make(map[string]*Session),
+		debug:    debug,
 	}
 }
 
@@ -120,24 +113,6 @@ func (s *SessionStore) AddLine(path, line string) int {
 	s.mu.Lock()
 	session, exists := s.sessions[path]
 	if !exists {
-		// Check max sessions limit
-		if s.maxSessions > 0 && len(s.sessions) >= s.maxSessions {
-			// Remove oldest session (by UpdatedAt)
-			var oldestPath string
-			var oldestTime time.Time
-			for p, sess := range s.sessions {
-				sess.mu.RLock()
-				if oldestPath == "" || sess.UpdatedAt.Before(oldestTime) {
-					oldestPath = p
-					oldestTime = sess.UpdatedAt
-				}
-				sess.mu.RUnlock()
-			}
-			if oldestPath != "" {
-				log.Printf("Memory limit: removing oldest session %s to make room", oldestPath)
-				delete(s.sessions, oldestPath)
-			}
-		}
 		session = &Session{
 			Path:       path,
 			Lines:      make([]string, 0),
@@ -160,21 +135,6 @@ func (s *SessionStore) AddLine(path, line string) int {
 	// Strip trailing newline for Lines array storage
 	line = strings.TrimSuffix(line, "\n")
 	session.Lines = append(session.Lines, line)
-	
-	// Enforce max lines per session (keep newest lines)
-	if s.maxLinesPerSession > 0 && len(session.Lines) > s.maxLinesPerSession {
-		excess := len(session.Lines) - s.maxLinesPerSession
-		session.Lines = session.Lines[excess:]
-		// Trim RawContent proportionally (approximate)
-		// This is a simplification - in production you might want to recalculate
-		if len(session.RawContent) > 0 {
-			avgLineSize := len(session.RawContent) / (len(session.Lines) + excess)
-			bytesToTrim := excess * avgLineSize
-			if bytesToTrim < len(session.RawContent) {
-				session.RawContent = session.RawContent[bytesToTrim:]
-			}
-		}
-	}
 	
 	session.UpdatedAt = time.Now()
 	lineNum := len(session.Lines)
@@ -224,9 +184,9 @@ type Server struct {
 }
 
 // NewServer creates a new server instance
-func NewServer(port int, debug bool, maxLinesPerSession, maxSessions int) *Server {
+func NewServer(port int, debug bool) *Server {
 	return &Server{
-		store:       NewSessionStore(debug, maxLinesPerSession, maxSessions),
+		store:       NewSessionStore(debug),
 		port:        port,
 		debug:       debug,
 		broadcaster: NewSSEBroadcaster(),
@@ -449,11 +409,9 @@ func (s *Server) Start() error {
 func main() {
 	port := flag.Int("port", 7164, "HTTP server port")
 	debug := flag.Bool("debug", false, "Enable debug logging (MD5 hashes, etc.)")
-	maxLines := flag.Int("max-lines", 0, "Max lines per session (0 = unlimited)")
-	maxSessions := flag.Int("max-sessions", 0, "Max sessions to keep (0 = unlimited)")
 	flag.Parse()
 
-	server := NewServer(*port, *debug, *maxLines, *maxSessions)
+	server := NewServer(*port, *debug)
 	if err := server.Start(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
