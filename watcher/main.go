@@ -429,7 +429,7 @@ func (w *Watcher) Run() error {
 
 func main() {
 	watchDir := flag.String("watch", "", "Directory to watch (required)")
-	serverURL := flag.String("server", "ws://localhost:8080/watch", "WebSocket server URL")
+	serverURL := flag.String("server", "ws://localhost:7164/watch", "WebSocket server URL")
 	batchMs := flag.Int("batch-ms", 100, "Batch interval in milliseconds")
 	flag.Parse()
 

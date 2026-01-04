@@ -167,7 +167,7 @@ type LineEvent struct {
 #### API Endpoints
 
 **WebSocket** (for watcher):
-- `ws://localhost:8080/watch`
+- `ws://localhost:7164/watch`
 - Receives LineMessage from watcher
 - No authentication (MVP)
 
@@ -350,7 +350,7 @@ Flags:
 
 Example:
 ```bash
-watcher --watch ~/.pi/agent/sessions --server ws://localhost:8080/watch
+watcher --watch ~/.pi/agent/sessions --server ws://localhost:7164/watch
 ```
 
 ### Server CLI
@@ -359,13 +359,13 @@ watcher --watch ~/.pi/agent/sessions --server ws://localhost:8080/watch
 server [flags]
 
 Flags:
-  --port <int>        HTTP server port (default: 8080)
+  --port <int>        HTTP server port (default: 7164)
   --help              Show help
 ```
 
 Example:
 ```bash
-server --port 8080
+server --port 7164
 ```
 
 ## Error Handling

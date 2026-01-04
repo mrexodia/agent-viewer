@@ -19,16 +19,16 @@ A lightweight system to watch agent sessions as they happen, with <500ms latency
 cd server
 go run main.go
 ```
-Server starts at `http://localhost:8080`
+Server starts at `http://localhost:7164`
 
 ### 2. Start the watcher
 ```bash
 cd watcher
-go run main.go --watch ~/.pi/agent/sessions --server ws://localhost:8080/watch
+go run main.go --watch ~/.pi/agent/sessions --server ws://localhost:7164/watch
 ```
 
 ### 3. Open your browser
-Navigate to `http://localhost:8080` and watch your agent sessions live!
+Navigate to `http://localhost:7164` and watch your agent sessions live!
 
 ## Architecture
 
@@ -73,7 +73,7 @@ Flags:
 
 **Example**:
 ```bash
-watcher --watch ~/agent-sessions --server ws://localhost:8080/watch
+watcher --watch ~/agent-sessions --server ws://localhost:7164/watch
 ```
 
 ### Server CLI
@@ -82,7 +82,7 @@ watcher --watch ~/agent-sessions --server ws://localhost:8080/watch
 server [flags]
 
 Flags:
-  --port <int>        HTTP server port (default: 8080)
+  --port <int>        HTTP server port (default: 7164)
   --help              Show help
 ```
 
@@ -172,12 +172,12 @@ See `devdocs/mvp/tests.md` for comprehensive test suite.
 cd server && go run main.go
 
 # Terminal 2: Start watcher with test data
-cd watcher && go run main.go --watch ../test-sessions/single --server ws://localhost:8080/watch
+cd watcher && go run main.go --watch ../test-sessions/single --server ws://localhost:7164/watch
 
 # Terminal 3: Append to test file
 echo '{"event":"test"}' >> test-sessions/single/session1.jsonl
 
-# Browser: Open http://localhost:8080 and see the update appear!
+# Browser: Open http://localhost:7164 and see the update appear!
 ```
 
 ### Test Data
@@ -196,7 +196,7 @@ EOF
 ## Troubleshooting
 
 ### Watcher won't connect
-- Check server is running: `curl http://localhost:8080/api/sessions`
+- Check server is running: `curl http://localhost:7164/api/sessions`
 - Check WebSocket URL is correct (should start with `ws://` not `http://`)
 - Check firewall/network settings
 

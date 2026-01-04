@@ -10,7 +10,7 @@ make build
 make test          # verbose
 make test-quick    # quiet
 
-# Run server (default port 8080)
+# Run server (default port 7164)
 make server
 # Or with custom port:
 cd server && ./server --port 9000
@@ -18,12 +18,12 @@ cd server && ./server --port 9000
 # Run watcher
 make watcher WATCH_DIR=/path/to/sessions
 # Or directly:
-cd watcher && ./watcher --watch ~/.pi/agent/sessions --server ws://localhost:8080/watch
+cd watcher && ./watcher --watch ~/.pi/agent/sessions --server ws://localhost:7164/watch
 
 # Manual testing
 # 1. Start server in one terminal
 # 2. Start watcher in another terminal  
-# 3. Open http://localhost:8080 in browser
+# 3. Open http://localhost:7164 in browser
 # 4. Append to a .jsonl file and watch it appear
 ```
 
@@ -98,7 +98,7 @@ Issues must be **self-sufficient for session handoff**. A new session should be 
 Create basic HTTP server with placeholder UI.
 
 ## What to build
-- server/main.go with HTTP server on port 8080
+- server/main.go with HTTP server on port 7164
 - server/static/index.html (placeholder)
 - GET /api/sessions returning {"sessions": []}
 
@@ -107,7 +107,7 @@ Create basic HTTP server with placeholder UI.
 - devdocs/<epic>/design.md § 'Server' for full API spec
 
 ## Validation
-Can load http://localhost:8080 in browser and see HTML page.
+Can load http://localhost:7164 in browser and see HTML page.
 ```
 
 ### Working on an Epic

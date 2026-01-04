@@ -387,7 +387,7 @@ func (s *Server) Start() error {
 }
 
 func main() {
-	port := flag.Int("port", 8080, "HTTP server port")
+	port := flag.Int("port", 7164, "HTTP server port")
 	flag.Parse()
 
 	server := NewServer(*port)

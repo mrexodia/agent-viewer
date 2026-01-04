@@ -94,7 +94,7 @@ make test
 # Manual testing
 make server                    # Terminal 1
 make watcher WATCH_DIR=/tmp/test  # Terminal 2
-# Open http://localhost:8080
+# Open http://localhost:7164
 
 # Append and watch
 echo '{"event":"test"}' >> /tmp/test/session.jsonl

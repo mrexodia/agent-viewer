@@ -35,11 +35,11 @@ agent-viewer/
 ## Development Commands
 
 ```bash
-# Start server (port 8080)
+# Start server (port 7164)
 cd server && go run main.go
 
 # Start watcher
-cd watcher && go run main.go --watch ~/.pi/agent/sessions --server ws://localhost:8080/watch
+cd watcher && go run main.go --watch ~/.pi/agent/sessions --server ws://localhost:7164/watch
 
 # Test manually
 echo '{"event":"test"}' >> test-sessions/single/session1.jsonl
