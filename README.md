@@ -164,7 +164,7 @@ data: {"path":"2026-01-04.jsonl","line":"{\"event\":\"new\"}","line_num":121}
 
 ### Running Tests
 
-See `TESTS_MVP.md` for comprehensive test suite.
+See `devdocs/mvp/tests.md` for comprehensive test suite.
 
 **Quick test**:
 ```bash
@@ -261,9 +261,9 @@ These will be addressed in future phases.
 
 ## Documentation
 
-- `DESIGN.md` - Complete architecture and specifications
-- `TESTS_MVP.md` - Comprehensive test suite
-- `IMPLEMENTATION_ROADMAP.md` - Implementation guide
+- `devdocs/mvp/design.md` - Complete architecture and specifications
+- `devdocs/mvp/tests.md` - Comprehensive test suite
+- `devdocs/mvp/implementation.md` - Implementation guide
 - `README.md` - This file
 
 ## Contributing

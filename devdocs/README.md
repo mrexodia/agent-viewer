@@ -4,13 +4,13 @@
 
 | File | Purpose |
 |------|---------|
-| — | (none yet) |
+| [project-overview.md](project-overview.md) | Architecture, commands, key docs |
 
 ## Active Epics
 
 | Epic | Summary |
 |------|---------|
-| — | (none yet) |
+| [mvp/](mvp/) | MVP implementation - real-time JSONL viewer |
 
 ## Archive
 
