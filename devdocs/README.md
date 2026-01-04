@@ -6,6 +6,7 @@
 |------|---------|
 | [design.md](design.md) | Full system architecture, protocols, data structures |
 | [project-overview.md](project-overview.md) | Architecture, commands, key docs |
+| [pi-sessions.md](pi-sessions.md) | Information about the pi jsonl session format |
 
 ## Active Epics
 
