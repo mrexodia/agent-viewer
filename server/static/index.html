@@ -205,6 +205,11 @@
             margin-left: 40px;
         }
 
+        .msg-custom {
+            background: #3e1e3a;
+            margin-left: 40px;
+        }
+
         .msg-assistant {
             background: #1a2e1a;
             margin-right: 40px;
@@ -233,6 +238,7 @@
         }
 
         .msg-role.user { color: #60a5fa; }
+        .msg-role.custom { color: #f472b6; }
         .msg-role.assistant { color: #4ade80; }
 
         .msg-text {
@@ -255,6 +261,26 @@
             font-size: 0.75rem;
             margin-bottom: 4px;
             font-style: normal;
+        }
+
+        .msg-unknown {
+            background: #2d2d3d;
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 0.75rem;
+            padding: 10px;
+            border-radius: 4px;
+        }
+
+        .msg-unknown-header {
+            color: #f59e0b;
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+
+        .msg-unknown-json {
+            color: #888;
+            white-space: pre-wrap;
+            word-break: break-all;
         }
 
         .tool-call {
@@ -581,7 +607,7 @@
         // Render a parsed event to pretty view
         function renderPrettyEvent(event) {
             const type = event.type;
-            
+
             if (type === 'session') {
                 const el = document.createElement('div');
                 el.className = 'msg msg-system';
@@ -592,8 +618,31 @@
                 el.className = 'msg msg-system';
                 el.innerHTML = `Model: ${event.provider}/${event.modelId}`;
                 prettyView.appendChild(el);
+            } else if (type === 'thinking_level_change') {
+                // Optional: could display this, but usually not needed
+            } else if (type === 'custom_message' && event.display) {
+                // Render custom websocket messages with a distinct style
+                const el = document.createElement('div');
+                el.className = 'msg msg-custom';
+                el.innerHTML = `
+                    <div class="msg-header">
+                        <span class="msg-role custom">Custom</span>
+                        <span>${formatTime(event.timestamp)}</span>
+                    </div>
+                    <div class="msg-text">${escapeHtml(event.content || '')}</div>
+                `;
+                prettyView.appendChild(el);
             } else if (type === 'message') {
                 renderMessage(event.message, event.timestamp);
+            } else {
+                // Unknown event type - render raw JSON for debugging
+                const el = document.createElement('div');
+                el.className = 'msg msg-unknown';
+                el.innerHTML = `
+                    <div class="msg-unknown-header">Unknown event type: ${escapeHtml(type || 'null')}</div>
+                    <div class="msg-unknown-json">${escapeHtml(JSON.stringify(event, null, 2))}</div>
+                `;
+                prettyView.appendChild(el);
             }
         }
 
