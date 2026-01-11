@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Understanding Agent Viewer — An Interactive Deep Dive</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --bg: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text: #c9d1d9;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-orange: #d29922;
+            --accent-red: #f85149;
+            --accent-purple: #a371f7;
+            --border: #30363d;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            font-size: 17px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        /* Typography */
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 600;
+            margin-bottom: 0.5em;
+            color: #fff;
+        }
+
+        h2 {
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin-top: 3rem;
+            margin-bottom: 1rem;
+            color: #fff;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0.5rem;
+        }
+
+        h3 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-top: 2rem;
+            margin-bottom: 0.8rem;
+            color: var(--accent);
+        }
+
+        p {
+            margin-bottom: 1.2em;
+        }
+
+        .subtitle {
+            font-size: 1.2rem;
+            color: var(--text-muted);
+            margin-bottom: 2rem;
+        }
+
+        /* Code */
+        code {
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            background: var(--bg-tertiary);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            overflow-x: auto;
+            margin: 1rem 0 1.5rem;
+        }
+
+        pre code {
+            background: none;
+            padding: 0;
+        }
+
+        /* Key concepts */
+        .concept-box {
+            background: var(--bg-secondary);
+            border-left: 4px solid var(--accent);
+            padding: 20px;
+            margin: 1.5rem 0;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .concept-box.insight {
+            border-left-color: var(--accent-green);
+        }
+
+        .concept-box.warning {
+            border-left-color: var(--accent-orange);
+        }
+
+        .concept-box h4 {
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+            font-size: 1rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .concept-box.insight h4 {
+            color: var(--accent-green);
+        }
+
+        .concept-box.warning h4 {
+            color: var(--accent-orange);
+        }
+
+        /* Interactive diagrams */
+        .diagram-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 30px;
+            margin: 2rem 0;
+        }
+
+        .diagram-title {
+            text-align: center;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .flow-diagram {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .component {
+            background: var(--bg-tertiary);
+            border: 2px solid var(--border);
+            border-radius: 10px;
+            padding: 20px;
+            min-width: 150px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+        }
+
+        .component:hover, .component.active {
+            border-color: var(--accent);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(88, 166, 255, 0.15);
+        }
+
+        .component-icon {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .component-name {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .component-detail {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .arrow {
+            color: var(--text-muted);
+            font-size: 1.5rem;
+        }
+
+        .component-info {
+            display: none;
+            background: var(--bg);
+            border: 1px solid var(--accent);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+            text-align: left;
+            font-size: 0.9rem;
+        }
+
+        .component-info.visible {
+            display: block;
+        }
+
+        /* Quiz section */
+        .quiz {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 25px;
+            margin: 2rem 0;
+        }
+
+        .quiz-question {
+            font-weight: 600;
+            margin-bottom: 15px;
+            font-size: 1.1rem;
+        }
+
+        .quiz-options {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .quiz-option {
+            background: var(--bg-tertiary);
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .quiz-option:hover {
+            border-color: var(--accent);
+        }
+
+        .quiz-option.correct {
+            background: rgba(63, 185, 80, 0.15);
+            border-color: var(--accent-green);
+        }
+
+        .quiz-option.incorrect {
+            background: rgba(248, 81, 73, 0.15);
+            border-color: var(--accent-red);
+        }
+
+        .quiz-feedback {
+            margin-top: 15px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .quiz-feedback.visible {
+            display: block;
+        }
+
+        .quiz-feedback.correct {
+            background: rgba(63, 185, 80, 0.15);
+            border: 1px solid var(--accent-green);
+        }
+
+        .quiz-feedback.incorrect {
+            background: rgba(248, 81, 73, 0.15);
+            border: 1px solid var(--accent-red);
+        }
+
+        /* Simulation */
+        .simulation {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 25px;
+            margin: 2rem 0;
+        }
+
+        .simulation-title {
+            font-weight: 600;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .simulation-title::before {
+            content: "🎮";
+        }
+
+        .sim-display {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .sim-box {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
+            min-height: 120px;
+        }
+
+        .sim-box-title {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+        }
+
+        .sim-log {
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 0.75rem;
+            color: var(--accent-green);
+            max-height: 80px;
+            overflow-y: auto;
+        }
+
+        .sim-controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .sim-btn {
+            background: var(--accent);
+            color: #000;
+            border: none;
+            border-radius: 6px;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .sim-btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .sim-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .sim-btn.secondary {
+            background: var(--bg-tertiary);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        /* Code walkthrough */
+        .code-walkthrough {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 2rem 0;
+        }
+
+        .walkthrough-tabs {
+            display: flex;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .walkthrough-tab {
+            padding: 12px 24px;
+            cursor: pointer;
+            color: var(--text-muted);
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .walkthrough-tab:hover {
+            color: var(--text);
+        }
+
+        .walkthrough-tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        .walkthrough-content {
+            display: none;
+            padding: 20px;
+        }
+
+        .walkthrough-content.active {
+            display: block;
+        }
+
+        .code-highlight {
+            background: rgba(88, 166, 255, 0.1);
+            border-left: 3px solid var(--accent);
+            margin: -4px -16px;
+            padding: 4px 16px;
+        }
+
+        /* Mental model section */
+        .mental-model {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 30px;
+            margin: 2rem 0;
+        }
+
+        .mental-model h3 {
+            margin-top: 0;
+        }
+
+        .analogy {
+            display: flex;
+            gap: 30px;
+            align-items: start;
+            margin-top: 20px;
+        }
+
+        .analogy-real, .analogy-system {
+            flex: 1;
+            background: var(--bg);
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .analogy-title {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            margin-bottom: 15px;
+            letter-spacing: 0.5px;
+        }
+
+        .analogy-mapping {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin: 10px 0;
+        }
+
+        .analogy-from, .analogy-to {
+            font-size: 0.9rem;
+        }
+
+        .analogy-arrow {
+            color: var(--accent);
+        }
+
+        /* Progress tracker */
+        .progress-tracker {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 15px;
+            font-size: 0.85rem;
+            z-index: 100;
+        }
+
+        .progress-title {
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+        }
+
+        .progress-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 5px 0;
+            color: var(--text-muted);
+        }
+
+        .progress-item.complete {
+            color: var(--accent-green);
+        }
+
+        .progress-check {
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--border);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+        }
+
+        .progress-item.complete .progress-check {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+        }
+
+        /* Table of contents */
+        .toc {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 25px;
+            margin: 2rem 0;
+        }
+
+        .toc h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+        }
+
+        .toc-list {
+            list-style: none;
+        }
+
+        .toc-list li {
+            margin: 8px 0;
+        }
+
+        .toc-list a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        .toc-list a:hover {
+            text-decoration: underline;
+        }
+
+        .toc-duration {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .flow-diagram {
+                flex-direction: column;
+            }
+            .arrow {
+                transform: rotate(90deg);
+            }
+            .sim-display {
+                grid-template-columns: 1fr 1fr;
+            }
+            .analogy {
+                flex-direction: column;
+            }
+            .progress-tracker {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="progress-tracker" id="progressTracker">
+        <div class="progress-title">Your Progress</div>
+        <div class="progress-item" id="prog-arch">
+            <span class="progress-check">✓</span>
+            <span>Architecture</span>
+        </div>
+        <div class="progress-item" id="prog-data">
+            <span class="progress-check">✓</span>
+            <span>Data Flow</span>
+        </div>
+        <div class="progress-item" id="prog-code">
+            <span class="progress-check">✓</span>
+            <span>Code Deep Dive</span>
+        </div>
+        <div class="progress-item" id="prog-quiz">
+            <span class="progress-check">✓</span>
+            <span>Quiz Complete</span>
+        </div>
+        <div class="progress-item" id="prog-sim">
+            <span class="progress-check">✓</span>
+            <span>Run Simulation</span>
+        </div>
+    </div>
+
+    <div class="container">
+        <h1>Understanding Agent Viewer</h1>
+        <p class="subtitle">An interactive deep dive into real-time event streaming architecture</p>
+
+        <nav class="toc">
+            <h3>🗺️ Learning Path</h3>
+            <ol class="toc-list">
+                <li><a href="#mental-model">1. Building a Mental Model</a> <span class="toc-duration">~5 min</span></li>
+                <li><a href="#architecture">2. System Architecture</a> <span class="toc-duration">~8 min</span></li>
+                <li><a href="#data-flow">3. Data Flow Simulation</a> <span class="toc-duration">~5 min</span></li>
+                <li><a href="#deep-dive">4. Code Deep Dive</a> <span class="toc-duration">~10 min</span></li>
+                <li><a href="#edge-cases">5. Edge Cases & Error Handling</a> <span class="toc-duration">~5 min</span></li>
+                <li><a href="#quiz">6. Check Your Understanding</a> <span class="toc-duration">~5 min</span></li>
+                <li><a href="#critique">7. Critique & Future Ideas</a> <span class="toc-duration">~5 min</span></li>
+            </ol>
+        </nav>
+
+        <!-- Section 1: Mental Model -->
+        <section id="mental-model">
+            <h2>1. Building a Mental Model</h2>
+            
+            <p>Before diving into code, let's establish an intuitive understanding of what this system does and why it exists.</p>
+
+            <div class="mental-model">
+                <h3>🧠 Think of it like a Security Camera System</h3>
+                
+                <div class="analogy">
+                    <div class="analogy-real">
+                        <div class="analogy-title">📹 Security Camera System</div>
+                        <p>Cameras watch areas → Feed goes to security room → Monitors display live feeds</p>
+                    </div>
+                    <div class="analogy-system">
+                        <div class="analogy-title">🤖 Agent Viewer System</div>
+                        <p>Watcher monitors files → Server receives events → Browser displays live updates</p>
+                    </div>
+                </div>
+
+                <div style="margin-top: 25px">
+                    <div class="analogy-mapping">
+                        <span class="analogy-from">📁 JSONL files (logs of agent activity)</span>
+                        <span class="analogy-arrow">→</span>
+                        <span class="analogy-to">Like camera footage being recorded</span>
+                    </div>
+                    <div class="analogy-mapping">
+                        <span class="analogy-from">👀 Watcher (fsnotify + websocket)</span>
+                        <span class="analogy-arrow">→</span>
+                        <span class="analogy-to">Like cameras sending feeds to control room</span>
+                    </div>
+                    <div class="analogy-mapping">
+                        <span class="analogy-from">🖥️ Server (receives + broadcasts)</span>
+                        <span class="analogy-arrow">→</span>
+                        <span class="analogy-to">Like the security control room</span>
+                    </div>
+                    <div class="analogy-mapping">
+                        <span class="analogy-from">🌐 Browser (SSE + display)</span>
+                        <span class="analogy-arrow">→</span>
+                        <span class="analogy-to">Like monitors showing live feeds</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="concept-box insight">
+                <h4>💡 Key Insight: Event Streaming</h4>
+                <p>This is an <strong>event streaming system</strong>. Instead of the browser asking "any updates?" repeatedly (polling), the server <em>pushes</em> updates as they happen. This is why it's real-time with &lt;500ms latency.</p>
+            </div>
+
+            <h3>The Core Problem Being Solved</h3>
+            <p>When an AI agent runs (like Claude doing a task), it writes its activity to log files. You want to:</p>
+            <ul style="margin-left: 20px; margin-bottom: 20px;">
+                <li>See what the agent is thinking/doing <strong>as it happens</strong></li>
+                <li>Monitor multiple agents at once</li>
+                <li>Open a browser and just watch — no setup</li>
+            </ul>
+
+            <p>The challenge: files are on disk, browsers can't read local files, and you want <em>instant</em> updates.</p>
+        </section>
+
+        <!-- Section 2: Architecture -->
+        <section id="architecture">
+            <h2>2. System Architecture</h2>
+            
+            <p>The system has three components. Click each one to learn more:</p>
+
+            <div class="diagram-container">
+                <div class="diagram-title">Data Flow Architecture</div>
+                <div class="flow-diagram">
+                    <div class="component" onclick="showComponentInfo('watcher')">
+                        <div class="component-icon">👀</div>
+                        <div class="component-name">Watcher</div>
+                        <div class="component-detail">Go process</div>
+                    </div>
+                    <div class="arrow">→<br><small>WebSocket</small></div>
+                    <div class="component" onclick="showComponentInfo('server')">
+                        <div class="component-icon">🖥️</div>
+                        <div class="component-name">Server</div>
+                        <div class="component-detail">Go process</div>
+                    </div>
+                    <div class="arrow">→<br><small>SSE</small></div>
+                    <div class="component" onclick="showComponentInfo('browser')">
+                        <div class="component-icon">🌐</div>
+                        <div class="component-name">Browser</div>
+                        <div class="component-detail">HTML/JS</div>
+                    </div>
+                </div>
+
+                <div class="component-info" id="info-watcher">
+                    <strong>Watcher (watcher/main.go)</strong><br><br>
+                    <strong>Job:</strong> Monitor a directory for .jsonl files and stream any new lines to the server.<br><br>
+                    <strong>How:</strong>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li><code>fsnotify</code> library detects file changes</li>
+                        <li>Reads only NEW lines (tracks position per file)</li>
+                        <li>Batches lines every 100ms (efficiency)</li>
+                        <li>Sends over WebSocket to server</li>
+                        <li>Auto-reconnects if connection drops</li>
+                    </ul>
+                </div>
+
+                <div class="component-info" id="info-server">
+                    <strong>Server (server/main.go)</strong><br><br>
+                    <strong>Job:</strong> Receive lines from watcher, store in memory, broadcast to browsers.<br><br>
+                    <strong>Key structures:</strong>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li><code>SessionStore</code> — Map of path → session data</li>
+                        <li><code>SSEBroadcaster</code> — Manages connected browser clients</li>
+                    </ul>
+                    <strong>Endpoints:</strong>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li><code>GET /</code> — Serve the web UI</li>
+                        <li><code>GET /api/sessions</code> — List all sessions</li>
+                        <li><code>GET /api/sessions/{path}/stream</code> — SSE stream</li>
+                        <li><code>WS /watch</code> — Watcher connects here</li>
+                    </ul>
+                </div>
+
+                <div class="component-info" id="info-browser">
+                    <strong>Browser (server/static/index.html)</strong><br><br>
+                    <strong>Job:</strong> Display sessions with live updates in a nice UI.<br><br>
+                    <strong>Key features:</strong>
+                    <ul style="margin-left: 20px; margin-top: 10px;">
+                        <li>Session list with live indicators (green dot = active)</li>
+                        <li>Two views: "Pretty" (parsed JSON) and "Raw" (lines)</li>
+                        <li>Auto-scroll that disables when you scroll up</li>
+                        <li>Uses EventSource API for Server-Sent Events</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="concept-box">
+                <h4>🔧 Why Two Protocols?</h4>
+                <p><strong>WebSocket</strong> (Watcher → Server): Bidirectional, good for the watcher sending lots of data. Could add handshakes later.</p>
+                <p><strong>SSE</strong> (Server → Browser): Simple, HTTP-based, browsers handle reconnection automatically. Perfect for server-to-client push.</p>
+            </div>
+        </section>
+
+        <!-- Section 3: Data Flow Simulation -->
+        <section id="data-flow">
+            <h2>3. Data Flow Simulation</h2>
+            
+            <p>Let's trace what happens when an agent writes a line to a log file:</p>
+
+            <div class="simulation">
+                <div class="simulation-title">Interactive Simulation</div>
+                
+                <div class="sim-display">
+                    <div class="sim-box">
+                        <div class="sim-box-title">📁 File System</div>
+                        <div class="sim-log" id="sim-file"></div>
+                    </div>
+                    <div class="sim-box">
+                        <div class="sim-box-title">👀 Watcher</div>
+                        <div class="sim-log" id="sim-watcher"></div>
+                    </div>
+                    <div class="sim-box">
+                        <div class="sim-box-title">🖥️ Server</div>
+                        <div class="sim-log" id="sim-server"></div>
+                    </div>
+                    <div class="sim-box">
+                        <div class="sim-box-title">🌐 Browser</div>
+                        <div class="sim-log" id="sim-browser"></div>
+                    </div>
+                </div>
+
+                <div class="sim-controls">
+                    <button class="sim-btn" onclick="simWriteLine()">Write Line to File</button>
+                    <button class="sim-btn secondary" onclick="simReset()">Reset</button>
+                    <button class="sim-btn secondary" onclick="simAutoPlay()">▶ Auto Play Demo</button>
+                </div>
+            </div>
+
+            <div class="concept-box insight">
+                <h4>💡 The Magic of fsnotify</h4>
+                <p>The watcher doesn't poll files — it uses OS-level file system notifications. On Linux this is <code>inotify</code>, on macOS it's <code>FSEvents</code>. The <code>fsnotify</code> library abstracts these differences.</p>
+            </div>
+
+            <h3>Latency Breakdown</h3>
+            <p>The system targets &lt;500ms end-to-end latency. Here's where time goes:</p>
+            
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                <tr style="background: var(--bg-secondary);">
+                    <th style="padding: 12px; text-align: left; border: 1px solid var(--border);">Stage</th>
+                    <th style="padding: 12px; text-align: left; border: 1px solid var(--border);">Typical</th>
+                    <th style="padding: 12px; text-align: left; border: 1px solid var(--border);">Why</th>
+                </tr>
+                <tr>
+                    <td style="padding: 12px; border: 1px solid var(--border);">fsnotify detection</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">&lt;10ms</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">OS kernel notification</td>
+                </tr>
+                <tr>
+                    <td style="padding: 12px; border: 1px solid var(--border);">Watcher batching</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">~100ms</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">Configurable (--batch-ms)</td>
+                </tr>
+                <tr>
+                    <td style="padding: 12px; border: 1px solid var(--border);">WebSocket send</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">&lt;10ms</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">Local network</td>
+                </tr>
+                <tr>
+                    <td style="padding: 12px; border: 1px solid var(--border);">SSE broadcast</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">&lt;10ms</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">In-memory, no DB</td>
+                </tr>
+                <tr>
+                    <td style="padding: 12px; border: 1px solid var(--border);">Browser render</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">&lt;20ms</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">DOM update</td>
+                </tr>
+                <tr style="background: var(--bg-secondary); font-weight: bold;">
+                    <td style="padding: 12px; border: 1px solid var(--border);">Total</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">&lt;150ms</td>
+                    <td style="padding: 12px; border: 1px solid var(--border);">Well under 500ms target</td>
+                </tr>
+            </table>
+        </section>
+
+        <!-- Section 4: Code Deep Dive -->
+        <section id="deep-dive">
+            <h2>4. Code Deep Dive</h2>
+            
+            <p>Let's examine the key code patterns. These are the "load-bearing" parts you'd need to understand to modify the system.</p>
+
+            <div class="code-walkthrough">
+                <div class="walkthrough-tabs">
+                    <div class="walkthrough-tab active" onclick="showTab('watcher-read')">File Reading</div>
+                    <div class="walkthrough-tab" onclick="showTab('batching')">Batching</div>
+                    <div class="walkthrough-tab" onclick="showTab('broadcast')">Broadcasting</div>
+                    <div class="walkthrough-tab" onclick="showTab('sse')">SSE Streaming</div>
+                </div>
+
+                <div class="walkthrough-content active" id="tab-watcher-read">
+                    <h4>How the Watcher Reads Files (watcher/main.go)</h4>
+                    <p>The watcher tracks which lines it has already sent, and only reads new ones:</p>
+                    <pre><code><span class="code-highlight">// FileState tracks the read position of a file
+type FileState struct {
+    Path     string // Relative path from watch root
+    LastLine int    // Last line number sent
+    LastSize int64  // Last known file size
+}</span>
+
+// readFile reads all lines and queues only NEW ones
+func (w *Watcher) readFile(absPath, relPath string) error {
+    file, err := os.Open(absPath)
+    // ...
+    
+    reader := bufio.NewReader(file)
+    lineNum := 0
+    
+    for {
+        line, err := reader.ReadString('\n')
+        lineNum++
+        
+        <span class="code-highlight">// Skip lines we've already sent
+        if lineNum <= state.LastLine {
+            continue
+        }</span>
+        
+        // Queue for sending
+        w.lineQueue <- LineMessage{
+            Type: "line",
+            Path: relPath,
+            Line: line,
+        }
+    }
+}</code></pre>
+                    <p><strong>Key insight:</strong> Uses <code>bufio.NewReader</code> instead of <code>bufio.Scanner</code> because Scanner has a max token size (64KB), but agent logs can have huge lines (think: base64 images).</p>
+                </div>
+
+                <div class="walkthrough-content" id="tab-batching">
+                    <h4>Batching for Efficiency (watcher/main.go)</h4>
+                    <p>Instead of sending every line immediately, the watcher batches them:</p>
+                    <pre><code>// batchSender collects lines and sends them in batches
+func (w *Watcher) batchSender() {
+    <span class="code-highlight">ticker := time.NewTicker(time.Duration(w.batchMs) * time.Millisecond)</span>
+    defer ticker.Stop()
+
+    var batch []LineMessage
+
+    for {
+        select {
+        case msg := <-w.lineQueue:
+            // Accumulate lines
+            batch = append(batch, msg)
+            
+        <span class="code-highlight">case <-ticker.C:
+            // Every 100ms, send whatever we've accumulated</span>
+            if len(batch) > 0 {
+                for _, msg := range batch {
+                    w.sendLine(msg)
+                }
+                batch = batch[:0] // Clear
+            }
+        }
+    }
+}</code></pre>
+                    <p><strong>Why batch?</strong> An agent might write 50 lines in quick succession. Sending 1 message with 50 lines is more efficient than 50 separate WebSocket frames.</p>
+                </div>
+
+                <div class="walkthrough-content" id="tab-broadcast">
+                    <h4>Broadcasting to Subscribers (server/main.go)</h4>
+                    <p>When the server receives a line, it broadcasts to all interested SSE clients:</p>
+                    <pre><code>// Broadcast sends an event to all clients watching a path
+func (b *SSEBroadcaster) Broadcast(event LineEvent) {
+    b.mu.RLock()
+    defer b.mu.RUnlock()
+
+    for client := range b.clients {
+        <span class="code-highlight">// Send to clients watching this specific path or all paths
+        if client.path == "" || client.path == event.Path {
+            // Block until we can send - never drop events
+            client.events <- event
+        }</span>
+    }
+}</code></pre>
+                    <p><strong>Design choice:</strong> The broadcast <em>blocks</em> if a client's buffer is full. This guarantees no data loss (MVP priority) but could cause slowdown with very slow clients. Future: add timeout or drop slow clients.</p>
+                </div>
+
+                <div class="walkthrough-content" id="tab-sse">
+                    <h4>SSE Streaming to Browsers (server/main.go)</h4>
+                    <p>Server-Sent Events use a specific text format:</p>
+                    <pre><code>func (s *Server) handleSessionStream(w http.ResponseWriter, ...) {
+    // SSE requires these headers
+    <span class="code-highlight">w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache")
+    w.Header().Set("Connection", "keep-alive")</span>
+
+    // Get the Flusher to push data immediately
+    flusher, _ := w.(http.Flusher)
+
+    // First, send all existing lines
+    session := s.store.GetSession(path)
+    for i, line := range session.Lines {
+        <span class="code-highlight">fmt.Fprintf(w, "event: line\ndata: %s\n\n", data)</span>
+    }
+    flusher.Flush()
+
+    // Then stream new events as they arrive
+    for {
+        select {
+        case event := <-client.events:
+            fmt.Fprintf(w, "event: line\ndata: %s\n\n", data)
+            flusher.Flush()
+        case <-r.Context().Done():
+            return // Client disconnected
+        }
+    }
+}</code></pre>
+                    <p><strong>SSE format:</strong> Each event is <code>event: name\ndata: payload\n\n</code>. The double newline marks end of event. Browsers handle reconnection automatically!</p>
+                </div>
+            </div>
+
+            <div class="concept-box warning">
+                <h4>⚠️ Concurrency Note</h4>
+                <p>The server uses <code>sync.RWMutex</code> for thread safety. Multiple browser clients can READ sessions concurrently (RLock), but writes from the watcher need exclusive access (Lock). This is why you see <code>mu.RLock()</code> vs <code>mu.Lock()</code> in the code.</p>
+            </div>
+        </section>
+
+        <!-- Section 5: Edge Cases -->
+        <section id="edge-cases">
+            <h2>5. Edge Cases & Error Handling</h2>
+            
+            <p>Robust systems handle the unexpected. Here's how Agent Viewer deals with edge cases:</p>
+
+            <h3>File Truncation</h3>
+            <p>What if a file gets replaced (e.g., log rotation)?</p>
+            <pre><code>// In readFile():
+if info.Size() < state.LastSize {
+    log.Printf("File %s was truncated, resending all lines", relPath)
+    state.LastLine = 0
+    state.LastSize = 0
+}</code></pre>
+
+            <h3>Connection Loss</h3>
+            <p>The watcher implements exponential backoff reconnection:</p>
+            <pre><code>func (w *Watcher) Reconnect() {
+    backoff := time.Second
+    maxBackoff := 30 * time.Second
+
+    for {
+        log.Printf("Reconnecting in %v...", backoff)
+        time.Sleep(backoff)
+
+        if err := w.Connect(); err != nil {
+            backoff *= 2  // 1s, 2s, 4s, 8s...
+            if backoff > maxBackoff {
+                backoff = maxBackoff
+            }
+        } else {
+            return // Success!
+        }
+    }
+}</code></pre>
+
+            <h3>Path Traversal Attack</h3>
+            <p>Malicious path like <code>../../../etc/passwd</code>?</p>
+            <pre><code>// Server rejects ".." in paths
+if strings.Contains(path, "..") {
+    http.Error(w, "Invalid path", http.StatusBadRequest)
+    return
+}</code></pre>
+
+            <h3>Very Long Lines</h3>
+            <p>Some agent logs include base64-encoded images (megabytes!). The integration tests verify 5MB+ lines work:</p>
+            <pre><code>// TestVeryLongJSONLLine creates a 5MB line
+longContent := strings.Repeat("x", 5*1024*1024)
+// ... verifies it transfers correctly</code></pre>
+        </section>
+
+        <!-- Section 6: Quiz -->
+        <section id="quiz">
+            <h2>6. Check Your Understanding</h2>
+            
+            <div class="quiz" id="quiz1">
+                <div class="quiz-question">1. Why does the watcher use WebSocket instead of SSE to send data to the server?</div>
+                <div class="quiz-options">
+                    <div class="quiz-option" onclick="checkAnswer(1, 0)">SSE only works in browsers, not in Go programs</div>
+                    <div class="quiz-option" onclick="checkAnswer(1, 1)">WebSocket is bidirectional, allowing for future handshakes/acknowledgments</div>
+                    <div class="quiz-option" onclick="checkAnswer(1, 2)">WebSocket is faster than SSE</div>
+                    <div class="quiz-option" onclick="checkAnswer(1, 3)">There's no particular reason, they're equivalent</div>
+                </div>
+                <div class="quiz-feedback" id="feedback1"></div>
+            </div>
+
+            <div class="quiz" id="quiz2">
+                <div class="quiz-question">2. What happens if the server process restarts?</div>
+                <div class="quiz-options">
+                    <div class="quiz-option" onclick="checkAnswer(2, 0)">Data is restored from disk</div>
+                    <div class="quiz-option" onclick="checkAnswer(2, 1)">All session data is lost (in-memory only for MVP)</div>
+                    <div class="quiz-option" onclick="checkAnswer(2, 2)">The watcher replays from its checkpoint file</div>
+                    <div class="quiz-option" onclick="checkAnswer(2, 3)">Browser clients restore data from their cache</div>
+                </div>
+                <div class="quiz-feedback" id="feedback2"></div>
+            </div>
+
+            <div class="quiz" id="quiz3">
+                <div class="quiz-question">3. Why does the broadcaster BLOCK when a client's buffer is full, rather than dropping events?</div>
+                <div class="quiz-options">
+                    <div class="quiz-option" onclick="checkAnswer(3, 0)">It's a bug that should be fixed</div>
+                    <div class="quiz-option" onclick="checkAnswer(3, 1)">MVP prioritizes "no data loss" over performance with slow clients</div>
+                    <div class="quiz-option" onclick="checkAnswer(3, 2)">Go channels can't drop messages</div>
+                    <div class="quiz-option" onclick="checkAnswer(3, 3)">SSE requires in-order delivery with no gaps</div>
+                </div>
+                <div class="quiz-feedback" id="feedback3"></div>
+            </div>
+
+            <div class="quiz" id="quiz4">
+                <div class="quiz-question">4. How does the watcher handle a new subdirectory being created while it's running?</div>
+                <div class="quiz-options">
+                    <div class="quiz-option" onclick="checkAnswer(4, 0)">It doesn't — you need to restart the watcher</div>
+                    <div class="quiz-option" onclick="checkAnswer(4, 1)">It uses inotify's IN_CREATE flag to detect new directories</div>
+                    <div class="quiz-option" onclick="checkAnswer(4, 2)">addDirectoryRecursive() adds the new dir and scans for .jsonl files</div>
+                    <div class="quiz-option" onclick="checkAnswer(4, 3)">It polls the directory tree every 5 seconds</div>
+                </div>
+                <div class="quiz-feedback" id="feedback4"></div>
+            </div>
+
+            <div class="quiz" id="quiz5">
+                <div class="quiz-question">5. Why use bufio.Reader instead of bufio.Scanner for reading lines?</div>
+                <div class="quiz-options">
+                    <div class="quiz-option" onclick="checkAnswer(5, 0)">Reader is faster than Scanner</div>
+                    <div class="quiz-option" onclick="checkAnswer(5, 1)">Scanner has a max token size (64KB), but agent logs can have huge lines</div>
+                    <div class="quiz-option" onclick="checkAnswer(5, 2)">Reader supports seeking, Scanner doesn't</div>
+                    <div class="quiz-option" onclick="checkAnswer(5, 3)">Scanner doesn't handle UTF-8 correctly</div>
+                </div>
+                <div class="quiz-feedback" id="feedback5"></div>
+            </div>
+        </section>
+
+        <!-- Section 7: Critique & Ideas -->
+        <section id="critique">
+            <h2>7. Critique & Future Ideas</h2>
+            
+            <p>Now that you understand the system, you're equipped to critique it and think of improvements!</p>
+
+            <h3>Known Limitations (Per the README)</h3>
+            <ul style="margin-left: 20px; margin-bottom: 20px;">
+                <li><strong>No persistence</strong> — Restart = data loss</li>
+                <li><strong>No auth</strong> — Localhost only</li>
+                <li><strong>In-memory only</strong> — Large sessions consume RAM</li>
+                <li><strong>No filtering</strong> — Shows all lines, no search</li>
+            </ul>
+
+            <h3>🤔 Questions to Ponder</h3>
+            <div class="concept-box">
+                <h4>Architecture Questions</h4>
+                <ul style="margin-left: 20px;">
+                    <li>Could the watcher and server be combined into one process? What are the tradeoffs?</li>
+                    <li>Is WebSocket the right choice for watcher→server, or would gRPC/QUIC be better for high-volume streaming?</li>
+                    <li>What if you wanted to support 1000 concurrent browser clients?</li>
+                </ul>
+            </div>
+
+            <div class="concept-box">
+                <h4>Reliability Questions</h4>
+                <ul style="margin-left: 20px;">
+                    <li>How would you add "exactly-once" delivery guarantees?</li>
+                    <li>What if the watcher crashes mid-file? How would you implement checkpointing?</li>
+                    <li>Should the server acknowledge received lines? What protocol would you use?</li>
+                </ul>
+            </div>
+
+            <div class="concept-box">
+                <h4>Feature Ideas</h4>
+                <ul style="margin-left: 20px;">
+                    <li>Session hierarchies (parent agent → subagents) — how would you model this?</li>
+                    <li>Full-text search across all sessions — SQLite FTS? Elasticsearch?</li>
+                    <li>Time-travel debugging — replay sessions at different speeds?</li>
+                    <li>Collaborative viewing — see where other viewers are looking?</li>
+                </ul>
+            </div>
+
+            <h3>Try These Exercises</h3>
+            <ol style="margin-left: 20px;">
+                <li><strong>Add a filter:</strong> Modify index.html to filter lines by regex</li>
+                <li><strong>Add metrics:</strong> Track lines/second in the server and expose at <code>/metrics</code></li>
+                <li><strong>Add persistence:</strong> Save sessions to SQLite on the server</li>
+                <li><strong>Add authentication:</strong> Require a token in a header for the watcher connection</li>
+            </ol>
+        </section>
+
+        <section style="margin-top: 60px; padding-top: 40px; border-top: 1px solid var(--border); text-align: center; color: var(--text-muted);">
+            <p>Generated for your personalized learning experience</p>
+            <p>Open <code>devdocs/learn/understanding-agent-viewer.html</code> in a browser to interact</p>
+        </section>
+    </div>
+
+    <script>
+        // Simulation state
+        let simLineCount = 0;
+        let simAutoPlaying = false;
+
+        function simLog(target, message) {
+            const el = document.getElementById(target);
+            el.innerHTML += message + '<br>';
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function simReset() {
+            simLineCount = 0;
+            simAutoPlaying = false;
+            ['sim-file', 'sim-watcher', 'sim-server', 'sim-browser'].forEach(id => {
+                document.getElementById(id).innerHTML = '';
+            });
+        }
+
+        async function simWriteLine() {
+            simLineCount++;
+            const line = `{"event":"action_${simLineCount}"}`;
+            
+            // Step 1: File write
+            simLog('sim-file', `+ ${line}`);
+            await sleep(50);
+            
+            // Step 2: Watcher detects
+            simLog('sim-watcher', `fsnotify: WRITE`);
+            await sleep(30);
+            simLog('sim-watcher', `read line ${simLineCount}`);
+            await sleep(100);
+            simLog('sim-watcher', `→ send to server`);
+            await sleep(20);
+            
+            // Step 3: Server receives
+            simLog('sim-server', `← received line ${simLineCount}`);
+            await sleep(10);
+            simLog('sim-server', `broadcast to ${1} client(s)`);
+            await sleep(10);
+            
+            // Step 4: Browser updates
+            simLog('sim-browser', `+ line ${simLineCount}`);
+            
+            markProgress('prog-sim');
+        }
+
+        async function simAutoPlay() {
+            if (simAutoPlaying) return;
+            simAutoPlaying = true;
+            simReset();
+            
+            for (let i = 0; i < 5 && simAutoPlaying; i++) {
+                await simWriteLine();
+                await sleep(300);
+            }
+            simAutoPlaying = false;
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        // Component info
+        function showComponentInfo(component) {
+            document.querySelectorAll('.component-info').forEach(el => el.classList.remove('visible'));
+            document.querySelectorAll('.component').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById('info-' + component).classList.add('visible');
+            event.target.closest('.component').classList.add('active');
+            
+            markProgress('prog-arch');
+        }
+
+        // Tabs
+        function showTab(tabId) {
+            document.querySelectorAll('.walkthrough-tab').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.walkthrough-content').forEach(el => el.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById('tab-' + tabId).classList.add('active');
+            
+            markProgress('prog-code');
+        }
+
+        // Quiz
+        const answers = {
+            1: 1,  // WebSocket is bidirectional
+            2: 1,  // All data lost (in-memory)
+            3: 1,  // MVP prioritizes no data loss
+            4: 2,  // addDirectoryRecursive
+            5: 1   // Scanner has max token size
+        };
+
+        const explanations = {
+            1: "Correct! While SSE could technically work, WebSocket's bidirectional nature allows for future features like sync handshakes, acknowledgments, and flow control.",
+            2: "Correct! This is a deliberate MVP tradeoff. The design doc mentions 'No persistence' as a non-goal for Phase 1. Phase 2 adds state files.",
+            3: "Correct! The code comment says 'Block until we can send - never drop events'. This is a conscious MVP decision trading throughput for reliability.",
+            4: "Correct! When fsnotify detects a CREATE event for a directory, addDirectoryRecursive() adds it to the watcher and scans for any .jsonl files already in it.",
+            5: "Correct! bufio.Scanner's default max token size is 64KB. Agent logs with base64 images can be megabytes. The tests verify 5MB+ lines work."
+        };
+
+        let correctCount = 0;
+        
+        function checkAnswer(quiz, selected) {
+            const options = document.querySelectorAll(`#quiz${quiz} .quiz-option`);
+            const feedback = document.getElementById(`feedback${quiz}`);
+            
+            options.forEach((opt, i) => {
+                opt.onclick = null; // Disable further clicks
+                if (i === answers[quiz]) {
+                    opt.classList.add('correct');
+                } else if (i === selected) {
+                    opt.classList.add('incorrect');
+                }
+            });
+            
+            if (selected === answers[quiz]) {
+                correctCount++;
+                feedback.className = 'quiz-feedback visible correct';
+                feedback.innerHTML = '✓ ' + explanations[quiz];
+            } else {
+                feedback.className = 'quiz-feedback visible incorrect';
+                feedback.innerHTML = '✗ Not quite. ' + explanations[quiz];
+            }
+            
+            if (document.querySelectorAll('.quiz-feedback.visible').length === 5) {
+                markProgress('prog-quiz');
+            }
+        }
+
+        // Progress tracking
+        function markProgress(id) {
+            document.getElementById(id).classList.add('complete');
+        }
+
+        // Intersection observer for scroll progress
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    if (entry.target.id === 'data-flow') markProgress('prog-data');
+                }
+            });
+        }, { threshold: 0.5 });
+
+        document.querySelectorAll('section').forEach(section => {
+            observer.observe(section);
+        });
+    </script>
+</body>
+</html>

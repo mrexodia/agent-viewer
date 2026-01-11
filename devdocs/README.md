@@ -1,5 +1,14 @@
 # Development Documentation
 
+## Learning Resources
+
+New to the codebase? Start here:
+
+| Resource | Description |
+|----------|-------------|
+| [learn/understanding-agent-viewer.html](learn/understanding-agent-viewer.html) | Interactive deep dive with diagrams, simulations, and quizzes |
+| [learn/cheatsheet.md](learn/cheatsheet.md) | Quick reference for daily development |
+
 ## Reference Docs
 
 | File | Purpose |
