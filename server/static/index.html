@@ -96,6 +96,31 @@
             color: #888;
         }
 
+        .source-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-right: 10px;
+        }
+
+        .source-badge.pi {
+            background: #3b82f6;
+            color: white;
+        }
+
+        .source-badge.claude {
+            background: #f59e0b;
+            color: white;
+        }
+
+        .source-badge.other {
+            background: #6b7280;
+            color: white;
+        }
+
         .viewer {
             margin-top: 20px;
         }
@@ -446,6 +471,7 @@
         // State
         let sessions = [];
         let selectedSession = null;
+        let selectedSource = null;
         let autoScroll = true;
         let eventSource = null;
         let lastActivity = 0;
@@ -479,19 +505,29 @@
             return new Date(isoTime);
         }
 
-        // Sort sessions by timestamp extracted from filename (most recent first)
+        // Sort sessions by updated_at (most recent first)
         function sortSessions() {
             sessions.sort((a, b) => {
+                // Primary sort: by updated_at (most recent first)
+                const ua = a.updated_at ? new Date(a.updated_at) : null;
+                const ub = b.updated_at ? new Date(b.updated_at) : null;
+
+                if (ua && ub) {
+                    return ub - ua;
+                }
+                if (!ua && ub) return 1;
+                if (ua && !ub) return -1;
+
+                // Fallback: try path timestamp (for Pi sessions)
                 const ta = extractTimestampFromPath(a.path);
                 const tb = extractTimestampFromPath(b.path);
 
-                if (!ta && !tb) {
-                    // Both have no timestamp, sort by path
-                    return a.path.localeCompare(b.path);
-                }
-                if (!ta) return 1; // Put no-timestamp items at the end
-                if (!tb) return -1;
-                return tb - ta; // Most recent first
+                if (ta && tb) return tb - ta;
+                if (!ta && tb) return 1;
+                if (ta && !tb) return -1;
+
+                // Last resort: sort by path
+                return a.path.localeCompare(b.path);
             });
         }
 
@@ -541,19 +577,89 @@
                 const isActive = isSessionActive(session.updated_at);
                 const timeAgo = formatTimeAgo(session.updated_at);
                 const isSelected = selectedSession === session.path;
+                const source = session.source || 'other';
+                const displayPath = formatSessionPath(session.path, source, session);
 
                 return `
-                    <li class="session-item${isSelected ? ' selected' : ''}" data-path="${escapeHtml(session.path)}">
+                    <li class="session-item${isSelected ? ' selected' : ''}" data-path="${escapeHtml(session.path)}" data-source="${escapeHtml(source)}" title="${escapeHtml(session.path)}">
                         <span class="live-indicator${isActive ? ' active' : ''}"></span>
-                        <span class="session-path">${escapeHtml(session.path)}</span>
+                        <span class="source-badge ${source}">${source}</span>
+                        <span class="session-path">${escapeHtml(displayPath)}</span>
                         <span class="session-meta">${session.line_count} lines · ${timeAgo}</span>
                     </li>
                 `;
             }).join('');
 
             sessionList.querySelectorAll('.session-item').forEach(item => {
-                item.addEventListener('click', () => selectSession(item.dataset.path));
+                item.addEventListener('click', () => selectSession(item.dataset.path, item.dataset.source));
             });
+        }
+
+        // Format session path for display based on source
+        function formatSessionPath(path, source, session) {
+            if (source === 'claude') {
+                // Claude paths are like: claude/-Users-admin-Projects-foo/session-uuid.jsonl
+                // Extract project name
+                const parts = path.split('/');
+                if (parts.length >= 2) {
+                    const projectDir = parts[1]; // -Users-admin-Projects-foo
+                    // Decode the project path: -Users-admin-Projects-foo -> Projects/foo
+                    // Split by '-' and take meaningful parts
+                    const decoded = projectDir.replace(/^-/, '').split('-');
+                    // Find "Projects" and take what comes after, or use last 2 parts
+                    const projIdx = decoded.findIndex(p => p === 'Projects');
+                    let projectName;
+                    if (projIdx >= 0 && projIdx < decoded.length - 1) {
+                        projectName = decoded.slice(projIdx + 1).join('-');
+                    } else {
+                        projectName = decoded.slice(-2).join('/');
+                    }
+
+                    // If we have a preview, show it
+                    if (session && session.preview) {
+                        const preview = session.preview.length > 40
+                            ? session.preview.substring(0, 40) + '...'
+                            : session.preview;
+                        return `${projectName}: ${preview}`;
+                    }
+
+                    return projectName;
+                }
+            }
+            return path;
+        }
+
+        // Extract preview from session lines (first user message)
+        function extractSessionPreview(lines, source) {
+            if (source !== 'claude') return null;
+
+            for (const line of lines) {
+                const preview = extractPreviewFromLine(line);
+                if (preview) return preview;
+            }
+            return null;
+        }
+
+        // Extract preview from a single line (for Claude sessions)
+        function extractPreviewFromLine(line) {
+            try {
+                const event = JSON.parse(line);
+                // Skip meta messages and tool results for preview
+                if (event.type === 'user' && !event.isMeta && !event.toolUseResult && event.message?.content) {
+                    // Get first line of content, strip any XML-like tags
+                    let content = getClaudeUserContent(event.message.content);
+                    if (content) {
+                        content = content.replace(/<[^>]+>/g, '').trim();
+                        const firstLine = content.split('\n')[0];
+                        if (firstLine && firstLine.length > 0) {
+                            return firstLine;
+                        }
+                    }
+                }
+            } catch (e) {
+                // Skip invalid JSON
+            }
+            return null;
         }
 
         function isSessionActive(updatedAt) {
@@ -608,6 +714,13 @@
         function renderPrettyEvent(event) {
             const type = event.type;
 
+            // Detect and handle Claude Code session format
+            if (selectedSource === 'claude') {
+                renderClaudeEvent(event);
+                return;
+            }
+
+            // Pi session format handling
             if (type === 'session') {
                 const el = document.createElement('div');
                 el.className = 'msg msg-system';
@@ -644,6 +757,150 @@
                 `;
                 prettyView.appendChild(el);
             }
+        }
+
+        // Render Claude Code session events
+        function renderClaudeEvent(event) {
+            const type = event.type;
+
+            if (type === 'file-history-snapshot') {
+                // Skip file history snapshots in pretty view
+                return;
+            }
+
+            if (type === 'user') {
+                const el = document.createElement('div');
+                el.className = 'msg msg-user';
+                const content = getClaudeUserContent(event.message?.content);
+                // Check if this is a meta/command message
+                if (event.isMeta) {
+                    el.className = 'msg msg-system';
+                    el.innerHTML = `<span style="color: #888;">Command/Meta message</span>`;
+                } else if (event.toolUseResult) {
+                    // This is a tool result message
+                    const result = event.toolUseResult;
+                    const isError = result.status === 'error';
+                    el.className = `tool-result${isError ? ' error' : ''}`;
+                    el.innerHTML = `
+                        <div class="tool-result-header">${isError ? 'Error' : 'Result'}: ${escapeHtml(result.agentId || 'Tool')}</div>
+                        <div class="tool-result-content">${escapeHtml(content)}</div>
+                    `;
+                } else {
+                    el.innerHTML = `
+                        <div class="msg-header">
+                            <span class="msg-role user">User</span>
+                            <span>${formatTime(event.timestamp)}</span>
+                        </div>
+                        <div class="msg-text">${escapeHtml(content)}</div>
+                    `;
+                }
+                prettyView.appendChild(el);
+            } else if (type === 'assistant') {
+                renderClaudeAssistantMessage(event);
+            } else {
+                // Unknown Claude event type
+                const el = document.createElement('div');
+                el.className = 'msg msg-unknown';
+                el.innerHTML = `
+                    <div class="msg-unknown-header">Unknown Claude event: ${escapeHtml(type || 'null')}</div>
+                    <div class="msg-unknown-json">${escapeHtml(JSON.stringify(event, null, 2))}</div>
+                `;
+                prettyView.appendChild(el);
+            }
+        }
+
+        // Extract text content from Claude user message content (can be string or array)
+        function getClaudeUserContent(content) {
+            if (!content) return '';
+            if (typeof content === 'string') return content;
+            if (Array.isArray(content)) {
+                // Extract text from content blocks
+                const texts = [];
+                for (const block of content) {
+                    if (block.type === 'text' && block.text) {
+                        texts.push(block.text);
+                    } else if (block.type === 'tool_result' && block.content) {
+                        // Tool result content can also be string or array
+                        if (typeof block.content === 'string') {
+                            texts.push(block.content);
+                        } else if (Array.isArray(block.content)) {
+                            for (const inner of block.content) {
+                                if (inner.type === 'text' && inner.text) {
+                                    texts.push(inner.text);
+                                }
+                            }
+                        }
+                    }
+                }
+                return texts.join('\n');
+            }
+            return String(content);
+        }
+
+        // Render Claude Code assistant message
+        function renderClaudeAssistantMessage(event) {
+            const msg = event.message;
+            if (!msg) return;
+
+            const el = document.createElement('div');
+            el.className = 'msg msg-assistant';
+
+            let html = `
+                <div class="msg-header">
+                    <span class="msg-role assistant">Assistant</span>
+                    <span>${msg.model || ''} · ${formatTime(event.timestamp)}</span>
+                </div>
+            `;
+
+            // Process content array
+            if (Array.isArray(msg.content)) {
+                for (const part of msg.content) {
+                    if (part.type === 'thinking' && part.thinking) {
+                        html += `
+                            <div class="msg-thinking">
+                                <div class="msg-thinking-header">Thinking</div>
+                                ${escapeHtml(part.thinking)}
+                            </div>
+                        `;
+                    } else if (part.type === 'text' && part.text) {
+                        html += `<div class="msg-text">${escapeHtml(part.text)}</div>`;
+                    } else if (part.type === 'tool_use') {
+                        html += `
+                            <div class="tool-call">
+                                <div class="tool-call-header">${escapeHtml(part.name)}</div>
+                                <div class="tool-call-args">${escapeHtml(JSON.stringify(part.input, null, 2))}</div>
+                            </div>
+                        `;
+                    } else if (part.type === 'tool_result') {
+                        const isError = part.is_error || false;
+                        html += `
+                            <div class="tool-result${isError ? ' error' : ''}">
+                                <div class="tool-result-header">${isError ? 'Error' : 'Result'}: ${escapeHtml(part.tool_use_id || '')}</div>
+                                <div class="tool-result-content">${escapeHtml(getTextContent(part.content))}</div>
+                            </div>
+                        `;
+                    }
+                }
+            }
+
+            // Usage info
+            if (msg.usage) {
+                const u = msg.usage;
+                const inputTokens = u.input_tokens || 0;
+                const outputTokens = u.output_tokens || 0;
+                const cacheRead = u.cache_read_input_tokens || 0;
+                const cacheCreate = u.cache_creation_input_tokens || 0;
+                html += `
+                    <div class="usage-info">
+                        Tokens: ${inputTokens} in / ${outputTokens} out
+                        ${cacheRead ? ` · ${cacheRead} cache read` : ''}
+                        ${cacheCreate ? ` · ${cacheCreate} cache create` : ''}
+                    </div>
+                `;
+            }
+
+            el.innerHTML = html;
+            prettyView.appendChild(el);
         }
 
         // Render a message (user, assistant, toolResult)
@@ -756,10 +1013,22 @@
         function handleNewLine(lineNum, content) {
             addRawLine(lineNum, content);
             addPrettyLine(content);
-            
+
+            // Update session preview if we don't have one yet
+            if (selectedSource === 'claude') {
+                const sessionIdx = sessions.findIndex(s => s.path === selectedSession);
+                if (sessionIdx >= 0 && !sessions[sessionIdx].preview) {
+                    const preview = extractPreviewFromLine(content);
+                    if (preview) {
+                        sessions[sessionIdx].preview = preview;
+                        renderSessionList();
+                    }
+                }
+            }
+
             lastActivity = Date.now();
             updateStatusIndicator();
-            
+
             if (autoScroll) {
                 const activeView = currentTab === 'pretty' ? prettyView : rawView;
                 activeView.scrollTop = activeView.scrollHeight;
@@ -812,8 +1081,9 @@
             };
         }
 
-        function selectSession(path) {
+        function selectSession(path, source) {
             selectedSession = path;
+            selectedSource = source || 'pi';
             viewerPath.textContent = path;
             viewer.style.display = 'block';
             renderSessionList();
@@ -856,12 +1126,31 @@
                     if (existingIdx >= 0) {
                         sessions[existingIdx].line_count = data.line_num;
                         sessions[existingIdx].updated_at = new Date().toISOString();
+                        if (data.source) {
+                            sessions[existingIdx].source = data.source;
+                        }
+                        // Try to extract preview if we don't have one yet
+                        if (!sessions[existingIdx].preview && data.source === 'claude') {
+                            const preview = extractPreviewFromLine(data.line);
+                            if (preview) {
+                                sessions[existingIdx].preview = preview;
+                            }
+                        }
                     } else {
-                        sessions.push({
+                        const newSession = {
                             path: data.path,
                             line_count: data.line_num,
-                            updated_at: new Date().toISOString()
-                        });
+                            updated_at: new Date().toISOString(),
+                            source: data.source || 'other'
+                        };
+                        // Try to extract preview from first line
+                        if (data.source === 'claude') {
+                            const preview = extractPreviewFromLine(data.line);
+                            if (preview) {
+                                newSession.preview = preview;
+                            }
+                        }
+                        sessions.push(newSession);
                         sortSessions(); // Re-sort when new session is added
                     }
                     renderSessionList();

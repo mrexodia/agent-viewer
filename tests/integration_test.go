@@ -177,8 +177,9 @@ func (e *TestEnv) StartWatcher(watchDir string) {
 	e.t.Helper()
 
 	// Use 'go run' for cross-platform compatibility
+	// Use the new format: --watch source:path
 	serverURL := fmt.Sprintf("ws://localhost:%d/watch", e.port)
-	e.watcher = exec.Command("go", "run", ".", "--watch", watchDir, "--server", serverURL)
+	e.watcher = exec.Command("go", "run", ".", "--watch", "test:"+watchDir, "--server", serverURL)
 	e.watcher.Dir = e.watcherDir
 	// Create new process group so we can kill all child processes
 	setupProcessGroup(e.watcher)
@@ -292,7 +293,7 @@ func TestInitialScan_SingleFile(t *testing.T) {
 	env.StartWatcher(env.testDir)
 
 	// Wait and verify
-	if !env.WaitForLineCount("session1.jsonl", 10, 2*time.Second) {
+	if !env.WaitForLineCount("test/session1.jsonl", 10, 2*time.Second) {
 		t.Fatal("Expected 10 lines within 2 seconds")
 	}
 
@@ -378,7 +379,7 @@ func TestLiveUpdate_SingleAppend(t *testing.T) {
 	env.StartWatcher(env.testDir)
 
 	// Wait for initial scan
-	if !env.WaitForLineCount("session1.jsonl", 10, 2*time.Second) {
+	if !env.WaitForLineCount("test/session1.jsonl", 10, 2*time.Second) {
 		t.Fatal("Initial scan failed")
 	}
 
@@ -386,7 +387,7 @@ func TestLiveUpdate_SingleAppend(t *testing.T) {
 	env.AppendLine("session1.jsonl", `{"event":"live_test"}`)
 
 	// Verify update received
-	if !env.WaitForLineCount("session1.jsonl", 11, 500*time.Millisecond) {
+	if !env.WaitForLineCount("test/session1.jsonl", 11, 500*time.Millisecond) {
 		t.Fatal("Live update not received within 500ms")
 	}
 }
@@ -403,7 +404,7 @@ func TestLiveUpdate_RapidAppends(t *testing.T) {
 	env.StartWatcher(env.testDir)
 
 	// Wait for initial scan
-	if !env.WaitForLineCount("session1.jsonl", 10, 2*time.Second) {
+	if !env.WaitForLineCount("test/session1.jsonl", 10, 2*time.Second) {
 		t.Fatal("Initial scan failed")
 	}
 
@@ -413,7 +414,7 @@ func TestLiveUpdate_RapidAppends(t *testing.T) {
 	}
 
 	// Verify all updates received
-	if !env.WaitForLineCount("session1.jsonl", 15, 1*time.Second) {
+	if !env.WaitForLineCount("test/session1.jsonl", 15, 1*time.Second) {
 		sessions := env.GetSessions()
 		t.Fatalf("Expected 15 lines, got %d", sessions.Sessions[0].LineCount)
 	}
@@ -457,12 +458,12 @@ func TestSessionContent_Correct(t *testing.T) {
 	env.StartWatcher(env.testDir)
 
 	// Wait for initial scan
-	if !env.WaitForLineCount("session1.jsonl", 10, 2*time.Second) {
+	if !env.WaitForLineCount("test/session1.jsonl", 10, 2*time.Second) {
 		t.Fatal("Initial scan failed")
 	}
 
 	// Get content and verify
-	content := env.GetSessionContent("session1.jsonl")
+	content := env.GetSessionContent("test/session1.jsonl")
 	if len(content.Lines) != 10 {
 		t.Fatalf("Expected 10 lines, got %d", len(content.Lines))
 	}
@@ -490,7 +491,7 @@ func TestLatency_FileToServer(t *testing.T) {
 	env.StartWatcher(env.testDir)
 
 	// Wait for initial scan
-	if !env.WaitForLineCount("session1.jsonl", 10, 2*time.Second) {
+	if !env.WaitForLineCount("test/session1.jsonl", 10, 2*time.Second) {
 		t.Fatal("Initial scan failed")
 	}
 
@@ -498,7 +499,7 @@ func TestLatency_FileToServer(t *testing.T) {
 	start := time.Now()
 	env.AppendLine("session1.jsonl", `{"event":"latency_test"}`)
 
-	if !env.WaitForLineCount("session1.jsonl", 11, 500*time.Millisecond) {
+	if !env.WaitForLineCount("test/session1.jsonl", 11, 500*time.Millisecond) {
 		t.Fatal("Update not received within 500ms")
 	}
 	latency := time.Since(start)
@@ -567,7 +568,7 @@ func TestNestedDirectoryCreation(t *testing.T) {
 
 	// Verify path is correct
 	sessions = env.GetSessions()
-	expectedPath := "sessions/project-name/session.jsonl"
+	expectedPath := "test/sessions/project-name/session.jsonl"
 	if sessions.Sessions[0].Path != expectedPath {
 		t.Fatalf("Expected path %s, got %s", expectedPath, sessions.Sessions[0].Path)
 	}
@@ -594,8 +595,8 @@ func TestNonJSONLFilesIgnored(t *testing.T) {
 	if len(sessions.Sessions) != 1 {
 		t.Fatalf("Expected 1 session, got %d", len(sessions.Sessions))
 	}
-	if sessions.Sessions[0].Path != "session.jsonl" {
-		t.Fatalf("Expected session.jsonl, got %s", sessions.Sessions[0].Path)
+	if sessions.Sessions[0].Path != "test/session.jsonl" {
+		t.Fatalf("Expected test/session.jsonl, got %s", sessions.Sessions[0].Path)
 	}
 }
 
@@ -620,13 +621,13 @@ func TestLongJSONLLine(t *testing.T) {
 	env.StartWatcher(env.testDir)
 
 	// Wait for lines
-	if !env.WaitForLineCount("session.jsonl", 3, 3*time.Second) {
+	if !env.WaitForLineCount("test/session.jsonl", 3, 3*time.Second) {
 		sessions := env.GetSessions()
 		t.Fatalf("Expected 3 lines (including long line), got %d", sessions.Sessions[0].LineCount)
 	}
 
 	// Verify the long line was received correctly
-	content := env.GetSessionContent("session.jsonl")
+	content := env.GetSessionContent("test/session.jsonl")
 	if len(content.Lines) != 3 {
 		t.Fatalf("Expected 3 lines, got %d", len(content.Lines))
 	}
@@ -676,7 +677,7 @@ func TestAtomicFileWrite(t *testing.T) {
 	}
 
 	// Verify content
-	content := env.GetSessionContent("session.jsonl")
+	content := env.GetSessionContent("test/session.jsonl")
 	if len(content.Lines) != 1 {
 		t.Fatalf("Expected 1 line, got %d", len(content.Lines))
 	}
@@ -698,7 +699,7 @@ func TestPathTraversalRejected(t *testing.T) {
 	env.StartWatcher(env.testDir)
 
 	// Wait for initial scan
-	if !env.WaitForLineCount("session.jsonl", 10, 2*time.Second) {
+	if !env.WaitForLineCount("test/session.jsonl", 10, 2*time.Second) {
 		t.Fatal("Initial scan failed")
 	}
 
@@ -741,7 +742,7 @@ func TestVeryLongJSONLLine(t *testing.T) {
 	env.StartWatcher(env.testDir)
 
 	// Wait for lines (give extra time for large data)
-	if !env.WaitForLineCount("session.jsonl", 3, 10*time.Second) {
+	if !env.WaitForLineCount("test/session.jsonl", 3, 10*time.Second) {
 		sessions := env.GetSessions()
 		lineCount := 0
 		if len(sessions.Sessions) > 0 {
@@ -751,7 +752,7 @@ func TestVeryLongJSONLLine(t *testing.T) {
 	}
 
 	// Verify the long line was received correctly
-	content := env.GetSessionContent("session.jsonl")
+	content := env.GetSessionContent("test/session.jsonl")
 	if len(content.Lines) != 3 {
 		t.Fatalf("Expected 3 lines, got %d", len(content.Lines))
 	}

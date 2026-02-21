@@ -19,9 +19,12 @@ import (
 
 // LineMessage is the message format to send to server
 type LineMessage struct {
-	Type string `json:"type"` // Always "line"
-	Path string `json:"path"` // Relative path
-	Line string `json:"line"` // Raw JSONL line content (includes \n)
+	Type    string `json:"type"`              // Always "line"
+	Path    string `json:"path"`              // Relative path
+	Line    string `json:"line"`              // Raw JSONL line content (includes \n)
+	Source  string `json:"source"`            // Source identifier (e.g., "pi", "claude")
+	ModTime string `json:"mod_time,omitempty"` // File modification time (ISO 8601)
+	Initial bool   `json:"initial,omitempty"`  // True if this is from initial scan (don't update timestamp)
 }
 
 // FileState tracks the read position of a file
@@ -29,11 +32,18 @@ type FileState struct {
 	Path     string // Relative path from watch root
 	LastLine int    // Last line number sent
 	LastSize int64  // Last known file size
+	Source   string // Source identifier (e.g., "pi", "claude")
 }
 
-// Watcher monitors a directory and sends updates to server
+// WatchDir represents a directory to watch with its source identifier
+type WatchDir struct {
+	Path   string // Absolute path to watch
+	Source string // Source identifier (e.g., "pi", "claude")
+}
+
+// Watcher monitors multiple directories and sends updates to server
 type Watcher struct {
-	watchDir  string
+	watchDirs []WatchDir
 	serverURL string
 	batchMs   int
 	conn      *websocket.Conn
@@ -46,15 +56,41 @@ type Watcher struct {
 }
 
 // NewWatcher creates a new watcher instance
-func NewWatcher(watchDir, serverURL string, batchMs int) *Watcher {
+func NewWatcher(watchDirs []WatchDir, serverURL string, batchMs int) *Watcher {
 	return &Watcher{
-		watchDir:  watchDir,
+		watchDirs: watchDirs,
 		serverURL: serverURL,
 		batchMs:   batchMs,
 		files:     make(map[string]*FileState),
 		lineQueue: make(chan LineMessage, 1000000), // Large buffer - never block file reading
 		done:      make(chan struct{}),
 	}
+}
+
+// findWatchDirForPath finds which watch directory contains the given path
+func (w *Watcher) findWatchDirForPath(absPath string) *WatchDir {
+	for i := range w.watchDirs {
+		if strings.HasPrefix(absPath, w.watchDirs[i].Path) {
+			return &w.watchDirs[i]
+		}
+	}
+	return nil
+}
+
+// getRelPathAndSource returns the relative path and source for a file
+func (w *Watcher) getRelPathAndSource(absPath string) (string, string, error) {
+	watchDir := w.findWatchDirForPath(absPath)
+	if watchDir == nil {
+		return "", "", fmt.Errorf("path not in any watch directory: %s", absPath)
+	}
+	relPath, err := filepath.Rel(watchDir.Path, absPath)
+	if err != nil {
+		return "", "", err
+	}
+	// Normalize to forward slashes and prefix with source
+	relPath = normalizePath(relPath)
+	fullPath := watchDir.Source + "/" + relPath
+	return fullPath, watchDir.Source, nil
 }
 
 // Connect establishes WebSocket connection to server
@@ -174,40 +210,47 @@ func normalizePath(path string) string {
 	return strings.ReplaceAll(path, "\\", "/")
 }
 
-// scanDirectory finds all .jsonl files and reads them
+// scanDirectory finds all .jsonl files and reads them from all watch directories (initial scan)
 func (w *Watcher) scanDirectory() error {
-	return filepath.Walk(w.watchDir, func(path string, info os.FileInfo, err error) error {
+	for _, watchDir := range w.watchDirs {
+		log.Printf("Scanning directory: %s (source: %s)", watchDir.Path, watchDir.Source)
+		err := filepath.Walk(watchDir.Path, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				log.Printf("Error accessing path %s: %v", path, err)
+				return nil // Continue walking
+			}
+
+			if info.IsDir() {
+				return nil
+			}
+
+			if !strings.HasSuffix(path, ".jsonl") {
+				return nil
+			}
+
+			relPath, source, err := w.getRelPathAndSource(path)
+			if err != nil {
+				log.Printf("Error getting relative path for %s: %v", path, err)
+				return nil
+			}
+
+			// Initial scan - mark all lines as initial so server uses file mod time
+			if err := w.readFile(path, relPath, source, true); err != nil {
+				log.Printf("Error reading file %s: %v", path, err)
+			}
+
+			return nil
+		})
 		if err != nil {
-			log.Printf("Error accessing path %s: %v", path, err)
-			return nil // Continue walking
+			log.Printf("Error scanning directory %s: %v", watchDir.Path, err)
 		}
-
-		if info.IsDir() {
-			return nil
-		}
-
-		if !strings.HasSuffix(path, ".jsonl") {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(w.watchDir, path)
-		if err != nil {
-			log.Printf("Error getting relative path for %s: %v", path, err)
-			return nil
-		}
-		// Normalize to forward slashes for cross-platform consistency
-		relPath = normalizePath(relPath)
-
-		if err := w.readFile(path, relPath); err != nil {
-			log.Printf("Error reading file %s: %v", path, err)
-		}
-
-		return nil
-	})
+	}
+	return nil
 }
 
 // readFile reads all lines from a file and queues them
-func (w *Watcher) readFile(absPath, relPath string) error {
+// If initial is true, all lines are marked as initial scan (server won't update timestamp)
+func (w *Watcher) readFile(absPath, relPath, source string, initial bool) error {
 	file, err := os.Open(absPath)
 	if err != nil {
 		return err
@@ -219,13 +262,18 @@ func (w *Watcher) readFile(absPath, relPath string) error {
 		return err
 	}
 
+	// Get file modification time for initial ordering
+	modTime := info.ModTime().UTC().Format(time.RFC3339)
+
 	w.filesMu.Lock()
 	state, exists := w.files[relPath]
+	isNewFile := !exists
 	if !exists {
 		state = &FileState{
 			Path:     relPath,
 			LastLine: 0,
 			LastSize: 0,
+			Source:   source,
 		}
 		w.files[relPath] = state
 	}
@@ -235,13 +283,14 @@ func (w *Watcher) readFile(absPath, relPath string) error {
 		log.Printf("File %s was truncated, resending all lines", relPath)
 		state.LastLine = 0
 		state.LastSize = 0
+		isNewFile = true // Treat as new file for mod time
 	}
 	w.filesMu.Unlock()
 
 	// Use bufio.Reader for unlimited line length support
 	// bufio.Scanner has a max token size, but ReadString('\n') grows dynamically
 	reader := bufio.NewReader(file)
-	
+
 	lineNum := 0
 	newLines := 0
 	for {
@@ -252,7 +301,7 @@ func (w *Watcher) readFile(absPath, relPath string) error {
 		if line == "" {
 			break // EOF with no more data
 		}
-		
+
 		lineNum++
 		w.filesMu.RLock()
 		lastLine := state.LastLine
@@ -269,14 +318,23 @@ func (w *Watcher) readFile(absPath, relPath string) error {
 		if !strings.HasSuffix(line, "\n") {
 			line = line + "\n"
 		}
-		
-		w.lineQueue <- LineMessage{
-			Type: "line",
-			Path: relPath,
-			Line: line,
+
+		msg := LineMessage{
+			Type:    "line",
+			Path:    relPath,
+			Line:    line,
+			Source:  source,
+			Initial: initial,
 		}
+
+		// Include mod time for first line of new/reset files (for initial ordering)
+		if isNewFile && newLines == 0 {
+			msg.ModTime = modTime
+		}
+
+		w.lineQueue <- msg
 		newLines++
-		
+
 		if err != nil {
 			break // EOF after processing last line
 		}
@@ -294,9 +352,9 @@ func (w *Watcher) readFile(absPath, relPath string) error {
 	return nil
 }
 
-// readNewLines reads only new lines from a modified file
-func (w *Watcher) readNewLines(absPath, relPath string) error {
-	return w.readFile(absPath, relPath)
+// readNewLines reads only new lines from a modified file (live updates, not initial scan)
+func (w *Watcher) readNewLines(absPath, relPath, source string) error {
+	return w.readFile(absPath, relPath, source, false)
 }
 
 // setupFSWatcher creates and configures the fsnotify watcher
@@ -307,24 +365,29 @@ func (w *Watcher) setupFSWatcher() error {
 	}
 	w.fsWatcher = fsWatcher
 
-	// Add watch directory and all subdirectories
-	err = filepath.Walk(w.watchDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip errors
-		}
-		if info.IsDir() {
-			if err := fsWatcher.Add(path); err != nil {
-				log.Printf("Warning: could not watch %s: %v", path, err)
+	// Add all watch directories and their subdirectories
+	for _, watchDir := range w.watchDirs {
+		err = filepath.Walk(watchDir.Path, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil // Skip errors
 			}
+			if info.IsDir() {
+				if err := fsWatcher.Add(path); err != nil {
+					log.Printf("Warning: could not watch %s: %v", path, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			log.Printf("Warning: error walking directory %s: %v", watchDir.Path, err)
 		}
-		return nil
-	})
+	}
 
-	return err
+	return nil
 }
 
 // addDirectoryRecursive adds a directory and all its subdirectories to the watcher
-// and scans for any existing .jsonl files
+// and scans for any existing .jsonl files (these are new files, not initial scan)
 func (w *Watcher) addDirectoryRecursive(dir string) {
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -339,14 +402,13 @@ func (w *Watcher) addDirectoryRecursive(dir string) {
 			}
 		} else if strings.HasSuffix(path, ".jsonl") {
 			// Found a .jsonl file in the new directory tree - read it
-			relPath, err := filepath.Rel(w.watchDir, path)
+			// Not initial scan since this is a newly created directory
+			relPath, source, err := w.getRelPathAndSource(path)
 			if err != nil {
 				log.Printf("Error getting relative path for %s: %v", path, err)
 				return nil
 			}
-			// Normalize to forward slashes for cross-platform consistency
-			relPath = normalizePath(relPath)
-			if err := w.readFile(path, relPath); err != nil {
+			if err := w.readFile(path, relPath, source, false); err != nil {
 				log.Printf("Error reading %s: %v", path, err)
 			}
 		}
@@ -390,15 +452,13 @@ func (w *Watcher) handleFSEvents() {
 					}
 				}
 
-				relPath, err := filepath.Rel(w.watchDir, event.Name)
+				relPath, source, err := w.getRelPathAndSource(event.Name)
 				if err != nil {
 					log.Printf("Error getting relative path: %v", err)
 					continue
 				}
-				// Normalize to forward slashes for cross-platform consistency
-				relPath = normalizePath(relPath)
 
-				if err := w.readNewLines(event.Name, relPath); err != nil {
+				if err := w.readNewLines(event.Name, relPath, source); err != nil {
 					log.Printf("Error reading %s: %v", event.Name, err)
 				}
 			}
@@ -417,13 +477,16 @@ func (w *Watcher) handleFSEvents() {
 
 // Run starts the watcher
 func (w *Watcher) Run() error {
-	// Check watch directory exists
-	info, err := os.Stat(w.watchDir)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return os.ErrNotExist
+	// Check all watch directories exist
+	for _, watchDir := range w.watchDirs {
+		info, err := os.Stat(watchDir.Path)
+		if err != nil {
+			log.Printf("Warning: watch directory %s does not exist, skipping", watchDir.Path)
+			continue
+		}
+		if !info.IsDir() {
+			log.Printf("Warning: %s is not a directory, skipping", watchDir.Path)
+		}
 	}
 
 	// Connect to server
@@ -445,7 +508,6 @@ func (w *Watcher) Run() error {
 	go w.handleFSEvents()
 
 	// Initial scan
-	log.Printf("Scanning directory: %s", w.watchDir)
 	if err := w.scanDirectory(); err != nil {
 		return err
 	}
@@ -474,17 +536,76 @@ func (w *Watcher) Run() error {
 	return nil
 }
 
+// arrayFlags allows multiple --watch flags
+type arrayFlags []string
+
+func (a *arrayFlags) String() string {
+	return strings.Join(*a, ",")
+}
+
+func (a *arrayFlags) Set(value string) error {
+	*a = append(*a, value)
+	return nil
+}
+
+// expandPath expands ~ to home directory
+func expandPath(path string) string {
+	if strings.HasPrefix(path, "~") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[1:])
+	}
+	return path
+}
+
 func main() {
-	watchDir := flag.String("watch", "", "Directory to watch (required)")
+	var watchDirs arrayFlags
+	flag.Var(&watchDirs, "watch", "Directory to watch with source (format: source:path). Can be specified multiple times.")
 	serverURL := flag.String("server", "ws://localhost:7164/watch", "WebSocket server URL")
 	batchMs := flag.Int("batch-ms", 100, "Batch interval in milliseconds")
+	usePi := flag.Bool("pi", false, "Watch Pi sessions at ~/.pi/agent/sessions")
+	useClaude := flag.Bool("claude", false, "Watch Claude Code sessions at ~/.claude/projects")
 	flag.Parse()
 
-	if *watchDir == "" {
-		log.Fatal("--watch flag is required")
+	var dirs []WatchDir
+
+	// Add built-in watch directories
+	if *usePi {
+		piPath := expandPath("~/.pi/agent/sessions")
+		dirs = append(dirs, WatchDir{Path: piPath, Source: "pi"})
 	}
 
-	watcher := NewWatcher(*watchDir, *serverURL, *batchMs)
+	if *useClaude {
+		claudePath := expandPath("~/.claude/projects")
+		dirs = append(dirs, WatchDir{Path: claudePath, Source: "claude"})
+	}
+
+	// Add custom watch directories from --watch flags
+	for _, watchSpec := range watchDirs {
+		// Parse format: source:path
+		parts := strings.SplitN(watchSpec, ":", 2)
+		if len(parts) == 2 {
+			dirs = append(dirs, WatchDir{Path: expandPath(parts[1]), Source: parts[0]})
+		} else {
+			// No source specified, use path as source name
+			path := expandPath(parts[0])
+			source := filepath.Base(path)
+			dirs = append(dirs, WatchDir{Path: path, Source: source})
+		}
+	}
+
+	if len(dirs) == 0 {
+		log.Fatal("No watch directories specified. Use --pi, --claude, or --watch source:path")
+	}
+
+	log.Printf("Watching %d directories:", len(dirs))
+	for _, d := range dirs {
+		log.Printf("  - %s (%s)", d.Path, d.Source)
+	}
+
+	watcher := NewWatcher(dirs, *serverURL, *batchMs)
 	if err := watcher.Run(); err != nil {
 		log.Fatalf("Watcher failed: %v", err)
 	}

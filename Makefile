@@ -27,6 +27,18 @@ server: build
 watcher: build
 	cd watcher && ./watcher --watch $(WATCH_DIR)
 
+# Start watcher with both Pi and Claude sessions
+watcher-all: build
+	cd watcher && ./watcher --pi --claude
+
+# Start watcher with Pi sessions only
+watcher-pi: build
+	cd watcher && ./watcher --pi
+
+# Start watcher with Claude sessions only
+watcher-claude: build
+	cd watcher && ./watcher --claude
+
 # Generate test data
 test-data:
 	./scripts/generate-test-data.sh

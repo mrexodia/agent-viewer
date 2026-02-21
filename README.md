@@ -24,7 +24,13 @@ Server starts at `http://localhost:7164`
 ### 2. Start the watcher
 ```bash
 cd watcher
-go run main.go --watch ~/.pi/agent/sessions --server ws://localhost:7164/watch
+# Watch both Pi and Claude Code sessions
+go run main.go --pi --claude
+
+# Or watch a specific source
+go run main.go --pi                                    # Pi sessions only
+go run main.go --claude                                # Claude Code sessions only
+go run main.go --watch custom:/path/to/sessions        # Custom source
 ```
 
 ### 3. Open your browser
@@ -45,16 +51,17 @@ session.jsonl  →   & streams      →   & broadcasts   →   live in HTML
 
 ## Features (MVP)
 
-✅ Recursive directory watching for .jsonl files  
-✅ Real-time streaming (<500ms latency)  
-✅ Multiple concurrent sessions  
-✅ Multiple browser viewers  
-✅ Auto-scroll with manual override  
-✅ Automatic reconnection on network issues  
+✅ Recursive directory watching for .jsonl files
+✅ Real-time streaming (<500ms latency)
+✅ Multiple concurrent sessions
+✅ Multiple browser viewers
+✅ Auto-scroll with manual override
+✅ Automatic reconnection on network issues
+✅ Multi-source support (Pi and Claude Code sessions)
+✅ Source-aware pretty rendering (different formats per source)
 
-❌ No authentication (localhost only)  
-❌ No persistence (data lost on restart)  
-❌ No session parsing (just raw JSONL)  
+❌ No authentication (localhost only)
+❌ No persistence (data lost on restart)
 ❌ No search/filtering  
 
 ## Usage
@@ -65,15 +72,30 @@ session.jsonl  →   & streams      →   & broadcasts   →   live in HTML
 watcher [flags]
 
 Flags:
-  --watch <dir>       Directory to watch (required)
-  --server <url>      WebSocket server URL (required)
+  --pi                Watch Pi sessions at ~/.pi/agent/sessions
+  --claude            Watch Claude Code sessions at ~/.claude/projects
+  --watch <source:path>  Custom directory to watch (format: source:path)
+  --server <url>      WebSocket server URL (default: ws://localhost:7164/watch)
   --batch-ms <int>    Batch interval in milliseconds (default: 100)
   --help              Show help
 ```
 
-**Example**:
+**Examples**:
 ```bash
-watcher --watch ~/agent-sessions --server ws://localhost:7164/watch
+# Watch both Pi and Claude Code sessions
+watcher --pi --claude
+
+# Watch Pi sessions only
+watcher --pi
+
+# Watch Claude Code sessions only
+watcher --claude
+
+# Watch a custom directory with a named source
+watcher --watch custom:~/agent-sessions
+
+# Watch multiple custom directories
+watcher --watch source1:/path/one --watch source2:/path/two
 ```
 
 ### Server CLI
@@ -118,9 +140,16 @@ Response:
 {
   "sessions": [
     {
-      "path": "2026-01-04.jsonl",
+      "path": "pi/session.jsonl",
       "line_count": 120,
-      "updated_at": "2026-01-04T10:15:30Z"
+      "updated_at": "2026-01-04T10:15:30Z",
+      "source": "pi"
+    },
+    {
+      "path": "claude/-Users-project/session-uuid.jsonl",
+      "line_count": 50,
+      "updated_at": "2026-01-04T11:00:00Z",
+      "source": "claude"
     }
   ]
 }
@@ -132,7 +161,8 @@ GET /api/sessions/{path}
 
 Response:
 {
-  "path": "2026-01-04.jsonl",
+  "path": "pi/session.jsonl",
+  "source": "pi",
   "lines": [
     "{\"event\":\"start\"}",
     "{\"event\":\"tool_call\"}"
@@ -146,7 +176,7 @@ GET /api/sessions/{path}/stream
 
 Response (SSE):
 event: line
-data: {"path":"2026-01-04.jsonl","line":"{\"event\":\"new\"}","line_num":121}
+data: {"path":"pi/session.jsonl","line":"{\"event\":\"new\"}","line_num":121,"source":"pi"}
 ```
 
 ### WebSocket Protocol (Watcher ↔ Server)
@@ -155,8 +185,9 @@ data: {"path":"2026-01-04.jsonl","line":"{\"event\":\"new\"}","line_num":121}
 ```json
 {
   "type": "line",
-  "path": "2026-01-04.jsonl",
-  "line": "{\"event\":\"tool_call\"}\n"
+  "path": "pi/session.jsonl",
+  "line": "{\"event\":\"tool_call\"}\n",
+  "source": "pi"
 }
 ```
 

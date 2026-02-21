@@ -18,9 +18,12 @@ import (
 
 // LineMessage is the message format from watcher
 type LineMessage struct {
-	Type string `json:"type"` // Always "line"
-	Path string `json:"path"` // Relative path
-	Line string `json:"line"` // Raw JSONL line content
+	Type    string `json:"type"`              // Always "line"
+	Path    string `json:"path"`              // Relative path
+	Line    string `json:"line"`              // Raw JSONL line content
+	Source  string `json:"source"`            // Source identifier (e.g., "pi", "claude")
+	ModTime string `json:"mod_time,omitempty"` // File modification time (ISO 8601)
+	Initial bool   `json:"initial,omitempty"`  // True if from initial scan (don't update timestamp)
 }
 
 // LineEvent is sent to SSE clients
@@ -28,6 +31,7 @@ type LineEvent struct {
 	Path    string `json:"path"`
 	Line    string `json:"line"`
 	LineNum int    `json:"line_num"`
+	Source  string `json:"source"`
 }
 
 // Session stores data for a single JSONL session file
@@ -37,6 +41,7 @@ type Session struct {
 	RawContent []byte    `json:"-"` // Complete raw file content
 	LineCount  int       `json:"line_count"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	Source     string    `json:"source"` // Source identifier (e.g., "pi", "claude")
 	mu         sync.RWMutex
 }
 
@@ -109,14 +114,17 @@ func NewSessionStore(debug bool) *SessionStore {
 }
 
 // AddLine adds a line to a session, creating it if necessary
-func (s *SessionStore) AddLine(path, line string) int {
+// If initial is true, the timestamp is only set from modTime, not updated to current time
+func (s *SessionStore) AddLine(path, line, source, modTime string, initial bool) int {
 	s.mu.Lock()
 	session, exists := s.sessions[path]
+	isNew := !exists
 	if !exists {
 		session = &Session{
 			Path:       path,
 			Lines:      make([]string, 0),
 			RawContent: make([]byte, 0),
+			Source:     source,
 		}
 		s.sessions[path] = session
 	}
@@ -135,8 +143,21 @@ func (s *SessionStore) AddLine(path, line string) int {
 	// Strip trailing newline for Lines array storage
 	line = strings.TrimSuffix(line, "\n")
 	session.Lines = append(session.Lines, line)
-	
-	session.UpdatedAt = time.Now()
+
+	// Handle timestamp:
+	// - For new sessions with mod time, use that for initial ordering
+	// - For initial scan lines, don't update timestamp (keep the mod time)
+	// - For live updates, use current time
+	if isNew && modTime != "" {
+		if t, err := time.Parse(time.RFC3339, modTime); err == nil {
+			session.UpdatedAt = t
+		} else {
+			session.UpdatedAt = time.Now()
+		}
+	} else if !initial {
+		// Only update timestamp for live updates, not initial scan
+		session.UpdatedAt = time.Now()
+	}
 	lineNum := len(session.Lines)
 
 	// Only log MD5 hashes in debug mode
@@ -168,6 +189,7 @@ func (s *SessionStore) ListSessions() []Session {
 			Path:      session.Path,
 			LineCount: len(session.Lines),
 			UpdatedAt: session.UpdatedAt,
+			Source:    session.Source,
 		})
 		session.mu.RUnlock()
 	}
@@ -225,14 +247,17 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if msg.Type == "line" {
-			lineNum := s.store.AddLine(msg.Path, msg.Line)
-			log.Printf("Received line %d for %s", lineNum, msg.Path)
+			lineNum := s.store.AddLine(msg.Path, msg.Line, msg.Source, msg.ModTime, msg.Initial)
+			if !msg.Initial {
+				log.Printf("Received line %d for %s (source: %s)", lineNum, msg.Path, msg.Source)
+			}
 
 			// Broadcast to SSE clients
 			s.broadcaster.Broadcast(LineEvent{
 				Path:    msg.Path,
 				Line:    strings.TrimSuffix(msg.Line, "\n"),
 				LineNum: lineNum,
+				Source:  msg.Source,
 			})
 		}
 	}
@@ -310,11 +335,13 @@ func (s *Server) handleSessionContent(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	response := struct {
-		Path  string   `json:"path"`
-		Lines []string `json:"lines"`
+		Path   string   `json:"path"`
+		Lines  []string `json:"lines"`
+		Source string   `json:"source"`
 	}{
-		Path:  session.Path,
-		Lines: session.Lines,
+		Path:   session.Path,
+		Lines:  session.Lines,
+		Source: session.Source,
 	}
 
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -354,6 +381,7 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request, pat
 					Path:    path,
 					Line:    line,
 					LineNum: i + 1,
+					Source:  session.Source,
 				}
 				data, _ := json.Marshal(event)
 				fmt.Fprintf(w, "event: line\ndata: %s\n\n", data)
