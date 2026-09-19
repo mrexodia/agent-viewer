@@ -13,7 +13,8 @@ New to the codebase? Start here:
 
 | File | Purpose |
 |------|---------|
-| [design.md](design.md) | Full system architecture, protocols, data structures |
+| [design.md](design.md) | Original system architecture and design intent |
+| [reliability.md](reliability.md) | Current acknowledged ingestion, recovery, SSE cursors, and regression coverage |
 | [project-overview.md](project-overview.md) | Architecture, commands, key docs |
 | [pi-sessions.md](pi-sessions.md) | Information about the pi jsonl session format |
 

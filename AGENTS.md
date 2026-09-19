@@ -27,9 +27,9 @@ cd watcher && ./watcher --watch ~/.pi/agent/sessions --server ws://localhost:716
 # 4. Append to a .jsonl file and watch it appear
 ```
 
-## Issue Tracking (bd)
+## Work Tracking
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` for workflow context and commands.
+Track multi-session work in `devdocs/` using self-contained plans and checklists. Include concrete deliverables, references, validation commands, and blockers so another session can continue without external issue-tracking tooling.
 
 ## Epics (devdocs/)
 
@@ -67,15 +67,15 @@ Epic creation is collaborative. Work with the user to:
    - Each phase should be completable in one session
    - Testing checkpoints between phases
 
-5. **Create bd issues** - Create epic with child issues for tracking
+5. **Track work in the plan** - Add a checklist of deliverables and dependencies to `plan.md`
 
 6. **Offer cleanup** - Since devdocs/<epic>/ now contains the consolidated content, offer to delete the original scattered docs (DESIGN.md, research notes, etc.). The epic must be self-contained.
 
-### Writing Good Bd Issues
+### Writing Good Work Items
 
-Issues must be **self-sufficient for session handoff**. A new session should be able to pick up an issue from `bd show <id>` without hunting through the codebase.
+Work items must be **self-sufficient for session handoff**. A new session should be able to pick up a plan without hunting through the codebase.
 
-**Required sections in issue description:**
+**Required sections in each work item:**
 
 ```markdown
 ## What to build
@@ -91,9 +91,9 @@ Issues must be **self-sufficient for session handoff**. A new session should be 
 - How to know it's done
 ```
 
-**Bad issue:** "Implement the server foundation"
+**Bad work item:** "Implement the server foundation"
 
-**Good issue:**
+**Good work item:**
 ```
 Create basic HTTP server with placeholder UI.
 
@@ -118,7 +118,7 @@ Can load http://localhost:7164 in browser and see HTML page.
 
 ### Archiving an Epic (user-initiated only)
 
-1. Ensure all bd issues are closed
+1. Ensure all plan checklist items are complete
 2. Extract key learnings to `devdocs/archive/<epic-name>.md`:
    - Goal and scope (1 paragraph)
    - Key architectural decisions
@@ -165,15 +165,15 @@ For trivial fixes (typos, obvious one-liners), use your judgment. But if you fin
 | Scope | Approach |
 |-------|----------|
 | Single-session work | Just do it |
-| Multi-session issue | `bd create` |
-| Large initiative with phases | Epic (devdocs/ + bd epic) |
+| Multi-session work | Self-contained plan in `devdocs/` |
+| Large initiative with phases | Epic (`devdocs/` design + plan) |
 | Permanent reference knowledge | `devdocs/<topic>.md` |
 
 ## Session Handoff
 
 Before ending a session:
-- Create `bd` issues for any remaining or discovered work
-- Close completed issues
+- Record remaining or discovered work and blockers in the relevant `devdocs/` plan
+- Mark completed checklist items
 - Update plan.md with current state
 - **Provide validation** - Help the user verify the work without reading diffs:
   - Commands to run with expected output

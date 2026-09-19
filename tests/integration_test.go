@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,13 +48,33 @@ type SessionsResponse struct {
 
 type Session struct {
 	Path      string `json:"path"`
+	Source    string `json:"source"`
+	Preview   string `json:"preview"`
 	LineCount int    `json:"line_count"`
 	UpdatedAt string `json:"updated_at"`
 }
 
 type SessionContent struct {
-	Path  string   `json:"path"`
-	Lines []string `json:"lines"`
+	Path   string   `json:"path"`
+	Source string   `json:"source"`
+	Lines  []string `json:"lines"`
+}
+
+// Process output is written by os/exec goroutines while readiness is polled.
+type processOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (o *processOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.Write(p)
+}
+func (o *processOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
 }
 
 // TestEnv manages test server and watcher processes
@@ -155,6 +177,8 @@ func (e *TestEnv) StartServer() {
 	// Use 'go run' for cross-platform compatibility
 	e.server = exec.Command("go", "run", ".", "--port", fmt.Sprintf("%d", e.port))
 	e.server.Dir = e.serverDir
+	output := &processOutput{}
+	e.server.Stdout, e.server.Stderr = output, output
 	// Create new process group so we can kill all child processes
 	setupProcessGroup(e.server)
 	if err := e.server.Start(); err != nil {
@@ -170,24 +194,38 @@ func (e *TestEnv) StartServer() {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	e.t.Fatal("Server failed to start within 5 seconds")
+	e.t.Fatalf("Server failed to start within 5 seconds:\n%s", output.String())
 }
 
 func (e *TestEnv) StartWatcher(watchDir string) {
 	e.t.Helper()
+	e.StartWatchers("test:" + watchDir)
+}
 
-	// Use 'go run' for cross-platform compatibility
-	// Use the new format: --watch source:path
+func (e *TestEnv) StartWatchers(specs ...string) {
+	e.t.Helper()
 	serverURL := fmt.Sprintf("ws://localhost:%d/watch", e.port)
-	e.watcher = exec.Command("go", "run", ".", "--watch", "test:"+watchDir, "--server", serverURL)
+	args := []string{"run", ".", "--server", serverURL}
+	for _, spec := range specs {
+		args = append(args, "--watch", spec)
+	}
+	e.watcher = exec.Command("go", args...)
 	e.watcher.Dir = e.watcherDir
+	output := &processOutput{}
+	e.watcher.Stdout, e.watcher.Stderr = output, output
 	// Create new process group so we can kill all child processes
 	setupProcessGroup(e.watcher)
 	if err := e.watcher.Start(); err != nil {
 		e.t.Fatalf("Failed to start watcher: %v", err)
 	}
-	// Give watcher time to connect and scan
-	time.Sleep(500 * time.Millisecond)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(output.String(), "Initial scan complete.") {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	e.t.Fatalf("Watcher failed to become ready:\n%s", output.String())
 }
 
 func (e *TestEnv) CreateTestFile(relPath string, lines []string) string {
@@ -587,9 +625,7 @@ func TestNonJSONLFilesIgnored(t *testing.T) {
 	env.StartServer()
 	env.StartWatcher(env.testDir)
 
-	// Wait for scan
-	time.Sleep(500 * time.Millisecond)
-
+	// StartWatcher waits for the acknowledged initial scan, not a fixed sleep.
 	// Verify only .jsonl file picked up
 	sessions := env.GetSessions()
 	if len(sessions.Sessions) != 1 {
@@ -631,7 +667,7 @@ func TestLongJSONLLine(t *testing.T) {
 	if len(content.Lines) != 3 {
 		t.Fatalf("Expected 3 lines, got %d", len(content.Lines))
 	}
-	
+
 	// Verify the long line content
 	if !strings.Contains(content.Lines[1], longContent[:100]) {
 		t.Fatal("Long line content was truncated or corrupted")
@@ -659,12 +695,12 @@ func TestAtomicFileWrite(t *testing.T) {
 	// Simulate atomic write: write to temp file, then rename
 	tempFile := filepath.Join(env.testDir, "session.tmp")
 	finalFile := filepath.Join(env.testDir, "session.jsonl")
-	
+
 	// Write to temp file
 	if err := os.WriteFile(tempFile, []byte(`{"event":"atomic_test"}`+"\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Rename to final name (atomic operation)
 	if err := os.Rename(tempFile, finalFile); err != nil {
 		t.Fatal(err)

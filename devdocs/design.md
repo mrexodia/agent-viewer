@@ -1,5 +1,9 @@
 # Agent Session Viewer - Design Document
 
+> This document records the original MVP design. The watcher protocol, file state,
+> batching/recovery, and SSE behavior below are superseded by
+> [reliability.md](reliability.md), which describes the current implementation.
+
 ## Overview
 
 A real-time session monitoring system for agent workflows that write JSONL event logs. The system consists of:

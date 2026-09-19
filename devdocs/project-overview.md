@@ -36,10 +36,10 @@ agent-viewer/
 
 ```bash
 # Start server (port 7164)
-cd server && go run main.go
+cd server && go run .
 
 # Start watcher
-cd watcher && go run main.go --watch ~/.pi/agent/sessions --server ws://localhost:7164/watch
+cd watcher && go run . --watch ~/.pi/agent/sessions --server ws://localhost:7164/watch
 
 # Test manually
 echo '{"event":"test"}' >> test-sessions/single/session1.jsonl
@@ -49,10 +49,9 @@ echo '{"event":"test"}' >> test-sessions/single/session1.jsonl
 
 | Document | Purpose |
 |----------|---------|
-| devdocs/mvp/design.md | Complete architecture, protocols, edge cases |
-| devdocs/mvp/implementation.md | Code patterns, snippets, implementation order |
-| devdocs/mvp/tests.md | Comprehensive test specifications |
-| devdocs/mvp/plan.md | Phase tracking and status |
+| devdocs/design.md | Original architecture and design intent |
+| devdocs/reliability.md | Current recovery/streaming protocol and regression tests |
+| devdocs/archive/mvp.md | Original implementation history |
 | README.md | User-facing documentation |
 
 ## Performance Targets

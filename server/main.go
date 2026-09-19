@@ -1,30 +1,19 @@
 package main
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
-
-// LineMessage is the message format from watcher
-type LineMessage struct {
-	Type    string `json:"type"`              // Always "line"
-	Path    string `json:"path"`              // Relative path
-	Line    string `json:"line"`              // Raw JSONL line content
-	Source  string `json:"source"`            // Source identifier (e.g., "pi", "claude")
-	ModTime string `json:"mod_time,omitempty"` // File modification time (ISO 8601)
-	Initial bool   `json:"initial,omitempty"`  // True if from initial scan (don't update timestamp)
-}
 
 // LineEvent is sent to SSE clients
 type LineEvent struct {
@@ -37,11 +26,14 @@ type LineEvent struct {
 // Session stores data for a single JSONL session file
 type Session struct {
 	Path       string    `json:"path"`
+	Source     string    `json:"source,omitempty"` // Display/parser label: pi, claude, etc.
+	SourceID   string    `json:"-"`                // Stable watch-root identity, not the display label.
+	Preview    string    `json:"preview,omitempty"`
+	Generation string    `json:"generation"`
 	Lines      []string  `json:"lines,omitempty"`
 	RawContent []byte    `json:"-"` // Complete raw file content
 	LineCount  int       `json:"line_count"`
 	UpdatedAt  time.Time `json:"updated_at"`
-	Source     string    `json:"source"` // Source identifier (e.g., "pi", "claude")
 	mu         sync.RWMutex
 }
 
@@ -68,7 +60,7 @@ func NewSSEBroadcaster() *SSEBroadcaster {
 func (b *SSEBroadcaster) Subscribe(path string) *SSEClient {
 	client := &SSEClient{
 		path:   path,
-		events: make(chan LineEvent, 100),
+		events: make(chan LineEvent, 1), // Coalesced wakeups, not the authoritative event log.
 	}
 	b.mu.Lock()
 	b.clients[client] = true
@@ -79,9 +71,11 @@ func (b *SSEBroadcaster) Subscribe(path string) *SSEClient {
 // Unsubscribe removes an SSE client
 func (b *SSEBroadcaster) Unsubscribe(client *SSEClient) {
 	b.mu.Lock()
-	delete(b.clients, client)
+	if b.clients[client] {
+		delete(b.clients, client)
+		close(client.events)
+	}
 	b.mu.Unlock()
-	close(client.events)
 }
 
 // Broadcast sends an event to all clients watching a path
@@ -92,8 +86,12 @@ func (b *SSEBroadcaster) Broadcast(event LineEvent) {
 	for client := range b.clients {
 		// Send to clients watching this specific path or all paths (empty path)
 		if client.path == "" || client.path == event.Path {
-			// Block until we can send - never drop events
-			client.events <- event
+			// A pending wakeup is sufficient: handlers read every missing line
+			// from the store. Slow clients cannot block producers or cleanup.
+			select {
+			case client.events <- event:
+			default:
+			}
 		}
 	}
 }
@@ -113,63 +111,6 @@ func NewSessionStore(debug bool) *SessionStore {
 	}
 }
 
-// AddLine adds a line to a session, creating it if necessary
-// If initial is true, the timestamp is only set from modTime, not updated to current time
-func (s *SessionStore) AddLine(path, line, source, modTime string, initial bool) int {
-	s.mu.Lock()
-	session, exists := s.sessions[path]
-	isNew := !exists
-	if !exists {
-		session = &Session{
-			Path:       path,
-			Lines:      make([]string, 0),
-			RawContent: make([]byte, 0),
-			Source:     source,
-		}
-		s.sessions[path] = session
-	}
-	s.mu.Unlock()
-
-	session.mu.Lock()
-	defer session.mu.Unlock()
-
-	// Accumulate raw content (preserve original line with newline)
-	rawLine := line
-	if !strings.HasSuffix(rawLine, "\n") {
-		rawLine += "\n"
-	}
-	session.RawContent = append(session.RawContent, []byte(rawLine)...)
-
-	// Strip trailing newline for Lines array storage
-	line = strings.TrimSuffix(line, "\n")
-	session.Lines = append(session.Lines, line)
-
-	// Handle timestamp:
-	// - For new sessions with mod time, use that for initial ordering
-	// - For initial scan lines, don't update timestamp (keep the mod time)
-	// - For live updates, use current time
-	if isNew && modTime != "" {
-		if t, err := time.Parse(time.RFC3339, modTime); err == nil {
-			session.UpdatedAt = t
-		} else {
-			session.UpdatedAt = time.Now()
-		}
-	} else if !initial {
-		// Only update timestamp for live updates, not initial scan
-		session.UpdatedAt = time.Now()
-	}
-	lineNum := len(session.Lines)
-
-	// Only log MD5 hashes in debug mode
-	if s.debug {
-		hash := md5.Sum([]byte(rawLine))
-		hashStr := hex.EncodeToString(hash[:])
-		log.Printf("[%s] line %d md5=%s", path, lineNum, hashStr)
-	}
-
-	return lineNum
-}
-
 // GetSession returns a session by path
 func (s *SessionStore) GetSession(path string) *Session {
 	s.mu.RLock()
@@ -186,10 +127,12 @@ func (s *SessionStore) ListSessions() []Session {
 	for _, session := range s.sessions {
 		session.mu.RLock()
 		result = append(result, Session{
-			Path:      session.Path,
-			LineCount: len(session.Lines),
-			UpdatedAt: session.UpdatedAt,
-			Source:    session.Source,
+			Path:       session.Path,
+			Source:     session.Source,
+			Preview:    session.Preview,
+			Generation: session.Generation,
+			LineCount:  len(session.Lines),
+			UpdatedAt:  session.UpdatedAt,
 		})
 		session.mu.RUnlock()
 	}
@@ -240,25 +183,19 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		var msg LineMessage
+		var msg SyncMessage
 		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("Invalid message format: %v", err)
-			continue
+			return
 		}
-
-		if msg.Type == "line" {
-			lineNum := s.store.AddLine(msg.Path, msg.Line, msg.Source, msg.ModTime, msg.Initial)
-			if !msg.Initial {
-				log.Printf("Received line %d for %s (source: %s)", lineNum, msg.Path, msg.Source)
-			}
-
-			// Broadcast to SSE clients
-			s.broadcaster.Broadcast(LineEvent{
-				Path:    msg.Path,
-				Line:    strings.TrimSuffix(msg.Line, "\n"),
-				LineNum: lineNum,
-				Source:  msg.Source,
-			})
+		reply, changed := s.store.Apply(msg)
+		if changed {
+			s.broadcaster.Broadcast(LineEvent{Path: msg.Path})
+		}
+		// Acknowledgements mean committed to the in-memory store. If this
+		// connection dies before the ACK arrives, sync reconciles the prefix.
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if err := conn.WriteJSON(reply); err != nil {
+			return
 		}
 	}
 
@@ -331,7 +268,8 @@ func (s *Server) handleSessionContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session.mu.RLock()
-	defer session.mu.RUnlock()
+	lines := append([]string{}, session.Lines...)
+	session.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	response := struct {
@@ -340,7 +278,7 @@ func (s *Server) handleSessionContent(w http.ResponseWriter, r *http.Request) {
 		Source string   `json:"source"`
 	}{
 		Path:   session.Path,
-		Lines:  session.Lines,
+		Lines:  lines,
 		Source: session.Source,
 	}
 
@@ -359,51 +297,100 @@ func (s *Server) handleSessionStream(w http.ResponseWriter, r *http.Request, pat
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Get flusher for streaming
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		http.Error(w, "Streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
-	// Subscribe to events
+	// Subscribe before the snapshot. Notifications are only wakeups; a cursor
+	// into the store makes snapshot/live overlap and coalescing lossless.
 	client := s.broadcaster.Subscribe(path)
 	defer s.broadcaster.Unsubscribe(client)
-
-	log.Printf("SSE client connected for path: %s", path)
-
-	// Send existing lines first if session exists
-	if path != "" {
-		session := s.store.GetSession(path)
-		if session != nil {
-			session.mu.RLock()
-			for i, line := range session.Lines {
-				event := LineEvent{
-					Path:    path,
-					Line:    line,
-					LineNum: i + 1,
-					Source:  session.Source,
-				}
-				data, _ := json.Marshal(event)
-				fmt.Fprintf(w, "event: line\ndata: %s\n\n", data)
+	controller := http.NewResponseController(w)
+	send := func(event, id string, value any) error {
+		if err := r.Context().Err(); err != nil {
+			return err
+		}
+		_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		if id != "" {
+			if _, err := fmt.Fprintf(w, "id: %s\n", id); err != nil {
+				return err
 			}
-			session.mu.RUnlock()
-			flusher.Flush()
+		}
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+			return err
+		}
+		return controller.Flush()
+	}
+	generation, cursor := "", 0
+	if parts := strings.Split(r.Header.Get("Last-Event-ID"), ":"); len(parts) == 2 {
+		if n, err := strconv.Atoi(parts[1]); err == nil && n >= 0 {
+			generation, cursor = parts[0], n
 		}
 	}
-
-	// Stream new events
+	heartbeat := time.NewTicker(10 * time.Second)
+	defer heartbeat.Stop()
 	for {
+		if path == "" {
+			// Global consumers need current metadata, not another copy of every
+			// transcript line. A complete snapshot also reconciles reconnects.
+			if err := send("sessions", "", s.store.ListSessions()); err != nil {
+				return
+			}
+		} else {
+			for {
+				session := s.store.GetSession(path)
+				if session == nil {
+					break
+				}
+				session.mu.RLock()
+				gen, total, source := session.Generation, len(session.Lines), session.Source
+				reset := generation != gen || cursor > total
+				if reset {
+					generation, cursor = gen, 0
+				}
+				end := cursor + 128
+				if end > total {
+					end = total
+				}
+				lines := append([]string(nil), session.Lines[cursor:end]...)
+				session.mu.RUnlock()
+				if reset {
+					if err := send("reset", gen+":0", map[string]string{"path": path}); err != nil {
+						return
+					}
+				}
+				for _, line := range lines {
+					cursor++
+					if err := send("line", fmt.Sprintf("%s:%d", gen, cursor), LineEvent{Path: path, Line: line, LineNum: cursor, Source: source}); err != nil {
+						return
+					}
+				}
+				if cursor == total {
+					break
+				}
+			}
+		}
+		// Flush headers even for a nonexistent/empty session and keep idle
+		// connections alive. Never hold store/broadcaster locks during I/O.
+		_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if _, err := fmt.Fprint(w, ": ready\n\n"); err != nil {
+			return
+		}
+		if err := controller.Flush(); err != nil {
+			return
+		}
 		select {
-		case event, ok := <-client.events:
+		case _, ok := <-client.events:
 			if !ok {
 				return
 			}
-			data, _ := json.Marshal(event)
-			fmt.Fprintf(w, "event: line\ndata: %s\n\n", data)
-			flusher.Flush()
-
+		case <-heartbeat.C:
 		case <-r.Context().Done():
-			log.Printf("SSE client disconnected for path: %s", path)
 			return
 		}
 	}
@@ -436,7 +423,7 @@ func (s *Server) Start() error {
 
 func main() {
 	port := flag.Int("port", 7164, "HTTP server port")
-	debug := flag.Bool("debug", false, "Enable debug logging (MD5 hashes, etc.)")
+	debug := flag.Bool("debug", false, "Enable batch commit logging")
 	flag.Parse()
 
 	server := NewServer(*port, *debug)

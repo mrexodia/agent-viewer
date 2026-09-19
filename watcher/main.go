@@ -2,14 +2,18 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -17,596 +21,420 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// LineMessage is the message format to send to server
-type LineMessage struct {
-	Type    string `json:"type"`              // Always "line"
-	Path    string `json:"path"`              // Relative path
-	Line    string `json:"line"`              // Raw JSONL line content (includes \n)
-	Source  string `json:"source"`            // Source identifier (e.g., "pi", "claude")
-	ModTime string `json:"mod_time,omitempty"` // File modification time (ISO 8601)
-	Initial bool   `json:"initial,omitempty"`  // True if this is from initial scan (don't update timestamp)
-}
-
-// FileState tracks the read position of a file
+// FileState is an acknowledged prefix, never merely a read/queued position.
+// Incomplete trailing records stay in the source file until their LF is written.
 type FileState struct {
-	Path     string // Relative path from watch root
-	LastLine int    // Last line number sent
-	LastSize int64  // Last known file size
-	Source   string // Source identifier (e.g., "pi", "claude")
+	SyncReply
+	info os.FileInfo
 }
 
-// WatchDir represents a directory to watch with its source identifier
+// WatchDir associates a session format/label with a filesystem root.
 type WatchDir struct {
-	Path   string // Absolute path to watch
-	Source string // Source identifier (e.g., "pi", "claude")
+	Path   string
+	Source string
+	id     string
 }
 
-// Watcher monitors multiple directories and sends updates to server
+// Watcher has one owner loop for filesystem reads and WebSocket exchanges.
+// Files, rather than an unbounded RAM queue, are the durable retry buffer.
 type Watcher struct {
-	watchDirs []WatchDir
-	serverURL string
-	batchMs   int
-	conn      *websocket.Conn
-	connMu    sync.Mutex
-	files     map[string]*FileState
-	filesMu   sync.RWMutex
-	lineQueue chan LineMessage
-	done      chan struct{}
-	fsWatcher *fsnotify.Watcher
+	watchDirs   []WatchDir
+	serverURL   string
+	batchMs     int
+	conn        *websocket.Conn
+	files       map[string]*FileState
+	fsWatcher   *fsnotify.Watcher
+	directories map[string]bool
 }
 
-// NewWatcher creates a new watcher instance
 func NewWatcher(watchDirs []WatchDir, serverURL string, batchMs int) *Watcher {
-	return &Watcher{
-		watchDirs: watchDirs,
-		serverURL: serverURL,
-		batchMs:   batchMs,
-		files:     make(map[string]*FileState),
-		lineQueue: make(chan LineMessage, 1000000), // Large buffer - never block file reading
-		done:      make(chan struct{}),
-	}
+	return &Watcher{watchDirs: watchDirs, serverURL: serverURL, batchMs: batchMs, files: make(map[string]*FileState), directories: make(map[string]bool)}
 }
 
-// findWatchDirForPath finds which watch directory contains the given path
+// Prefer the most specific root and require a path-component boundary (not a
+// string prefix, which would confuse /sessions with /sessions-other).
 func (w *Watcher) findWatchDirForPath(absPath string) *WatchDir {
+	var best *WatchDir
 	for i := range w.watchDirs {
-		if strings.HasPrefix(absPath, w.watchDirs[i].Path) {
-			return &w.watchDirs[i]
+		root := &w.watchDirs[i]
+		rel, err := filepath.Rel(root.Path, absPath)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			if best == nil || len(root.Path) > len(best.Path) {
+				best = root
+			}
 		}
 	}
-	return nil
+	return best
 }
 
-// getRelPathAndSource returns the relative path and source for a file
 func (w *Watcher) getRelPathAndSource(absPath string) (string, string, error) {
-	watchDir := w.findWatchDirForPath(absPath)
-	if watchDir == nil {
+	root := w.findWatchDirForPath(absPath)
+	if root == nil {
 		return "", "", fmt.Errorf("path not in any watch directory: %s", absPath)
 	}
-	relPath, err := filepath.Rel(watchDir.Path, absPath)
+	rel, err := filepath.Rel(root.Path, absPath)
 	if err != nil {
 		return "", "", err
 	}
-	// Normalize to forward slashes and prefix with source
-	relPath = normalizePath(relPath)
-	fullPath := watchDir.Source + "/" + relPath
-	return fullPath, watchDir.Source, nil
+	return root.Source + "/" + normalizePath(rel), root.Source, nil
 }
 
-// Connect establishes WebSocket connection to server
-func (w *Watcher) Connect() error {
-	w.connMu.Lock()
-	defer w.connMu.Unlock()
+func normalizePath(path string) string { return strings.ReplaceAll(path, "\\", "/") }
 
-	conn, _, err := websocket.DefaultDialer.Dial(w.serverURL, nil)
-	if err != nil {
-		return err
+func (w *Watcher) exchange(msg SyncMessage) (SyncReply, error) {
+	deadline := time.Now().Add(5 * time.Second)
+	w.conn.SetWriteDeadline(deadline)
+	w.conn.SetReadDeadline(deadline)
+	if err := w.conn.WriteJSON(msg); err != nil {
+		return SyncReply{}, err
 	}
-	w.conn = conn
-	log.Printf("Connected to server: %s", w.serverURL)
-	return nil
-}
-
-// Reconnect attempts to reconnect with exponential backoff
-func (w *Watcher) Reconnect() {
-	backoff := time.Second
-	maxBackoff := 30 * time.Second
-
-	for {
-		select {
-		case <-w.done:
-			return
-		default:
-		}
-
-		log.Printf("Attempting to reconnect in %v...", backoff)
-		time.Sleep(backoff)
-
-		if err := w.Connect(); err != nil {
-			log.Printf("Reconnection failed: %v", err)
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		} else {
-			log.Printf("Reconnected successfully")
-			return
-		}
+	var reply SyncReply
+	if err := w.conn.ReadJSON(&reply); err != nil {
+		return reply, err
 	}
-}
-
-// IsConnected checks if we have an active connection
-func (w *Watcher) IsConnected() bool {
-	w.connMu.Lock()
-	defer w.connMu.Unlock()
-	return w.conn != nil
-}
-
-// ErrNotConnected is returned when trying to send while disconnected
-var ErrNotConnected = fmt.Errorf("not connected to server")
-
-// sendLine sends a single line message (internal, must hold connMu)
-func (w *Watcher) sendLine(msg LineMessage) error {
-	w.connMu.Lock()
-	defer w.connMu.Unlock()
-
-	if w.conn == nil {
-		return ErrNotConnected
+	if reply.Error != "" {
+		return reply, fmt.Errorf("server: %s", reply.Error)
 	}
-	return w.conn.WriteJSON(msg)
-}
-
-// batchSender collects lines and sends them in batches
-func (w *Watcher) batchSender() {
-	ticker := time.NewTicker(time.Duration(w.batchMs) * time.Millisecond)
-	defer ticker.Stop()
-
-	var batch []LineMessage
-
-	for {
-		select {
-		case msg := <-w.lineQueue:
-			batch = append(batch, msg)
-		case <-ticker.C:
-			if len(batch) > 0 {
-				failed := false
-				for _, msg := range batch {
-					if err := w.sendLine(msg); err != nil {
-						if err != ErrNotConnected {
-							log.Printf("Error sending line: %v", err)
-						}
-						failed = true
-						break
-					}
-				}
-				if failed {
-					// Connection lost, close and reconnect
-					w.connMu.Lock()
-					if w.conn != nil {
-						w.conn.Close()
-						w.conn = nil
-					}
-					w.connMu.Unlock()
-
-					go w.Reconnect()
-					// Keep batch for retry after reconnect
-				} else {
-					batch = batch[:0]
-				}
-			}
-		case <-w.done:
-			// Send remaining batch before exit
-			for _, msg := range batch {
-				w.sendLine(msg)
-			}
-			return
-		}
+	if (msg.Type == "ping" && reply.Type != "pong") || (msg.Type != "ping" && (reply.Type != "ack" || reply.Generation == "" || reply.Offset < 0)) {
+		return reply, fmt.Errorf("invalid server acknowledgement")
 	}
+	return reply, nil
 }
 
-// normalizePath converts OS-specific path separators to forward slashes
-// for consistent cross-platform path handling
-func normalizePath(path string) string {
-	return strings.ReplaceAll(path, "\\", "/")
-}
-
-// scanDirectory finds all .jsonl files and reads them from all watch directories (initial scan)
-func (w *Watcher) scanDirectory() error {
-	for _, watchDir := range w.watchDirs {
-		log.Printf("Scanning directory: %s (source: %s)", watchDir.Path, watchDir.Source)
-		err := filepath.Walk(watchDir.Path, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				log.Printf("Error accessing path %s: %v", path, err)
-				return nil // Continue walking
-			}
-
-			if info.IsDir() {
-				return nil
-			}
-
-			if !strings.HasSuffix(path, ".jsonl") {
-				return nil
-			}
-
-			relPath, source, err := w.getRelPathAndSource(path)
-			if err != nil {
-				log.Printf("Error getting relative path for %s: %v", path, err)
-				return nil
-			}
-
-			// Initial scan - mark all lines as initial so server uses file mod time
-			if err := w.readFile(path, relPath, source, true); err != nil {
-				log.Printf("Error reading file %s: %v", path, err)
-			}
-
-			return nil
-		})
-		if err != nil {
-			log.Printf("Error scanning directory %s: %v", watchDir.Path, err)
-		}
-	}
-	return nil
-}
-
-// readFile reads all lines from a file and queues them
-// If initial is true, all lines are marked as initial scan (server won't update timestamp)
-func (w *Watcher) readFile(absPath, relPath, source string, initial bool) error {
+// readFile verifies the already-committed prefix, then sends bounded batches of
+// complete records. Prefix verification also detects same-size replacement and
+// truncate-and-regrow events that file size/inode checks alone cannot detect.
+func (w *Watcher) readFile(absPath, relPath string) error {
 	file, err := os.Open(absPath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-
 	info, err := file.Stat()
 	if err != nil {
 		return err
 	}
-
-	// Get file modification time for initial ordering
-	modTime := info.ModTime().UTC().Format(time.RFC3339)
-
-	w.filesMu.Lock()
-	state, exists := w.files[relPath]
-	isNewFile := !exists
-	if !exists {
-		state = &FileState{
-			Path:     relPath,
-			LastLine: 0,
-			LastSize: 0,
-			Source:   source,
-		}
-		w.files[relPath] = state
+	root := w.findWatchDirForPath(absPath)
+	if root == nil {
+		return fmt.Errorf("path not in any watch directory: %s", absPath)
 	}
-
-	// Handle file truncation - reset and resend all
-	if info.Size() < state.LastSize {
-		log.Printf("File %s was truncated, resending all lines", relPath)
-		state.LastLine = 0
-		state.LastSize = 0
-		isNewFile = true // Treat as new file for mod time
+	exchange := func(msg SyncMessage) (SyncReply, error) {
+		msg.Source, msg.SourceID = root.Source, root.id
+		msg.ModTime = info.ModTime().UTC().Format(time.RFC3339Nano)
+		return w.exchange(msg)
 	}
-	w.filesMu.Unlock()
-
-	// Use bufio.Reader for unlimited line length support
-	// bufio.Scanner has a max token size, but ReadString('\n') grows dynamically
-	reader := bufio.NewReader(file)
-
-	lineNum := 0
-	newLines := 0
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil && err.Error() != "EOF" && line == "" {
+	state := w.files[relPath]
+	if state == nil {
+		reply, err := exchange(SyncMessage{Type: "sync", Path: relPath})
+		if err != nil {
 			return err
 		}
-		if line == "" {
-			break // EOF with no more data
-		}
-
-		lineNum++
-		w.filesMu.RLock()
-		lastLine := state.LastLine
-		w.filesMu.RUnlock()
-
-		if lineNum <= lastLine {
-			if err != nil {
-				break // EOF
-			}
-			continue // Skip already sent lines
-		}
-
-		// Ensure line ends with newline (last line might not)
-		if !strings.HasSuffix(line, "\n") {
-			line = line + "\n"
-		}
-
-		msg := LineMessage{
-			Type:    "line",
-			Path:    relPath,
-			Line:    line,
-			Source:  source,
-			Initial: initial,
-		}
-
-		// Include mod time for first line of new/reset files (for initial ordering)
-		if isNewFile && newLines == 0 {
-			msg.ModTime = modTime
-		}
-
-		w.lineQueue <- msg
-		newLines++
-
+		state = &FileState{SyncReply: reply}
+		w.files[relPath] = state
+	}
+	hash := sha256.New()
+	n, err := io.CopyN(hash, file, state.Offset)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if n != state.Offset || hex.EncodeToString(hash.Sum(nil)) != state.Digest {
+		reply, err := exchange(SyncMessage{Type: "reset", Path: relPath, Generation: state.Generation, Offset: state.Offset})
 		if err != nil {
-			break // EOF after processing last line
+			return err
+		}
+		state.SyncReply = reply
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		hash.Reset()
+	}
+	// Bound this pass to the observed size; continuously growing files must not
+	// starve other sessions or cancellation. Later changes trigger another pass.
+	remaining := info.Size() - state.Offset
+	if remaining < 0 {
+		remaining = 0
+	}
+	reader := bufio.NewReader(io.LimitReader(file, remaining))
+	for {
+		lines, eof, err := readBatch(reader)
+		if err != nil {
+			return err
+		}
+		if len(lines) > 0 {
+			offset := state.Offset
+			for _, line := range lines {
+				offset += int64(len(line))
+			}
+			reply, err := exchange(SyncMessage{Type: "append", Path: relPath, Generation: state.Generation, Offset: state.Offset, Lines: lines})
+			if err != nil {
+				return err
+			}
+			if reply.Generation != state.Generation || reply.Offset != offset {
+				return fmt.Errorf("acknowledged prefix changed; resync required")
+			}
+			for _, line := range lines {
+				_, _ = io.WriteString(hash, line)
+			}
+			state.SyncReply = reply
+			state.Digest = hex.EncodeToString(hash.Sum(nil))
+		}
+		if eof {
+			break
 		}
 	}
-
-	// Update state
-	w.filesMu.Lock()
-	state.LastLine = lineNum
-	state.LastSize = info.Size()
-	w.filesMu.Unlock()
-
-	if newLines > 0 {
-		log.Printf("Read %d new lines from %s (total: %d)", newLines, relPath, lineNum)
-	}
+	state.info = info
 	return nil
 }
 
-// readNewLines reads only new lines from a modified file (live updates, not initial scan)
-func (w *Watcher) readNewLines(absPath, relPath, source string) error {
-	return w.readFile(absPath, relPath, source, false)
+// An individual record can exceed the byte budget (e.g. image/tool output).
+// No newline is invented at EOF, and no fixed Scanner token limit is imposed.
+func readBatch(reader *bufio.Reader) ([]string, bool, error) {
+	var lines []string
+	size := 0
+	for len(lines) < 128 && size < 1024*1024 {
+		line, err := reader.ReadString('\n')
+		if errors.Is(err, io.EOF) {
+			return lines, true, nil
+		}
+		if err != nil {
+			return nil, false, err
+		}
+		lines = append(lines, line)
+		size += len(line)
+	}
+	return lines, false, nil
 }
 
-// setupFSWatcher creates and configures the fsnotify watcher
-func (w *Watcher) setupFSWatcher() error {
-	fsWatcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-	w.fsWatcher = fsWatcher
-
-	// Add all watch directories and their subdirectories
-	for _, watchDir := range w.watchDirs {
-		err = filepath.Walk(watchDir.Path, func(path string, info os.FileInfo, err error) error {
+func (w *Watcher) scanDirectory() error {
+	for _, root := range w.watchDirs {
+		err := filepath.Walk(root.Path, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				return nil // Skip errors
+				if !errors.Is(err, os.ErrNotExist) {
+					log.Printf("Cannot scan %s (will retry): %v", path, err)
+				}
+				return nil // One inaccessible path must not starve other sessions.
 			}
 			if info.IsDir() {
-				if err := fsWatcher.Add(path); err != nil {
-					log.Printf("Warning: could not watch %s: %v", path, err)
+				if !w.directories[path] {
+					if err := w.fsWatcher.Add(path); err != nil {
+						log.Printf("Cannot watch %s (polling instead): %v", path, err)
+					} else {
+						w.directories[path] = true
+					}
 				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".jsonl") {
+				return nil
+			}
+			relPath, _, err := w.getRelPathAndSource(path)
+			if err != nil {
+				return err
+			}
+			relPath = normalizePath(relPath)
+			state := w.files[relPath]
+			if state != nil && state.info != nil && os.SameFile(info, state.info) && info.Size() == state.info.Size() && info.ModTime().Equal(state.info.ModTime()) {
+				return nil
+			}
+			if err := w.readFile(path, relPath); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return nil
+				}
+				var fileError *os.PathError
+				if errors.As(err, &fileError) {
+					log.Printf("Cannot read %s (will retry): %v", relPath, err)
+					return nil
+				}
+				return fmt.Errorf("%s: %w", relPath, err)
 			}
 			return nil
 		})
 		if err != nil {
-			log.Printf("Warning: error walking directory %s: %v", watchDir.Path, err)
+			return err
 		}
 	}
-
 	return nil
 }
 
-// addDirectoryRecursive adds a directory and all its subdirectories to the watcher
-// and scans for any existing .jsonl files (these are new files, not initial scan)
-func (w *Watcher) addDirectoryRecursive(dir string) {
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip errors
-		}
-
-		if info.IsDir() {
-			if err := w.fsWatcher.Add(path); err != nil {
-				log.Printf("Warning: could not watch %s: %v", path, err)
-			} else {
-				log.Printf("Now watching directory: %s", path)
-			}
-		} else if strings.HasSuffix(path, ".jsonl") {
-			// Found a .jsonl file in the new directory tree - read it
-			// Not initial scan since this is a newly created directory
-			relPath, source, err := w.getRelPathAndSource(path)
-			if err != nil {
-				log.Printf("Error getting relative path for %s: %v", path, err)
-				return nil
-			}
-			if err := w.readFile(path, relPath, source, false); err != nil {
-				log.Printf("Error reading %s: %v", path, err)
-			}
-		}
-		return nil
-	})
-}
-
-// handleFSEvents processes filesystem events
-func (w *Watcher) handleFSEvents() {
-	for {
-		select {
-		case event, ok := <-w.fsWatcher.Events:
-			if !ok {
-				return
-			}
-
-			// Handle directory events first (for any path)
-			if event.Op&fsnotify.Create != 0 {
-				info, err := os.Stat(event.Name)
-				if err == nil && info.IsDir() {
-					// Recursively add directory and scan for .jsonl files
-					w.addDirectoryRecursive(event.Name)
-					continue
-				}
-			}
-
-			// Only care about .jsonl files from here on
-			if !strings.HasSuffix(event.Name, ".jsonl") {
-				continue
-			}
-
-			// Handle Write, Create, and Rename events for .jsonl files
-			// Rename is important for atomic writes (temp file -> final name)
-			// Chmod can also indicate file availability on some systems
-			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Chmod) != 0 {
-				// For Rename, check if the file now exists (it was renamed TO this name)
-				if event.Op&fsnotify.Rename != 0 {
-					if _, err := os.Stat(event.Name); err != nil {
-						// File was renamed away, not to this name
-						continue
-					}
-				}
-
-				relPath, source, err := w.getRelPathAndSource(event.Name)
-				if err != nil {
-					log.Printf("Error getting relative path: %v", err)
-					continue
-				}
-
-				if err := w.readNewLines(event.Name, relPath, source); err != nil {
-					log.Printf("Error reading %s: %v", event.Name, err)
-				}
-			}
-
-		case err, ok := <-w.fsWatcher.Errors:
-			if !ok {
-				return
-			}
-			log.Printf("fsnotify error: %v", err)
-
-		case <-w.done:
-			return
-		}
+func (w *Watcher) RunContext(ctx context.Context) error {
+	if w.batchMs <= 0 {
+		return fmt.Errorf("--batch-ms must be positive")
 	}
-}
-
-// Run starts the watcher
-func (w *Watcher) Run() error {
-	// Check all watch directories exist
-	for _, watchDir := range w.watchDirs {
-		info, err := os.Stat(watchDir.Path)
-		if err != nil {
-			log.Printf("Warning: watch directory %s does not exist, skipping", watchDir.Path)
-			continue
-		}
-		if !info.IsDir() {
-			log.Printf("Warning: %s is not a directory, skipping", watchDir.Path)
-		}
-	}
-
-	// Connect to server
-	if err := w.Connect(); err != nil {
+	host, err := os.Hostname()
+	if err != nil {
 		return err
 	}
-
-	// Start batch sender
-	go w.batchSender()
-
-	// Setup filesystem watcher FIRST so we catch any changes during initial scan
-	if err := w.setupFSWatcher(); err != nil {
+	var roots []WatchDir
+	labels := make(map[string]bool)
+	for _, root := range w.watchDirs {
+		if err := validateSource(root.Source); err != nil {
+			return err
+		}
+		if labels[root.Source] {
+			return fmt.Errorf("duplicate source label %q: give each watch root a distinct label", root.Source)
+		}
+		labels[root.Source] = true
+		root.Path, err = filepath.Abs(expandPath(root.Path))
+		if err != nil {
+			return err
+		}
+		root.Path, err = filepath.EvalSymlinks(root.Path)
+		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("Skipping missing watch directory for %s", root.Source)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(root.Path)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("watch root is not a directory: %s", root.Path)
+		}
+		identity := sha256.Sum256([]byte(host + "\x00" + normalizePath(root.Path)))
+		root.id = hex.EncodeToString(identity[:])
+		roots = append(roots, root)
+	}
+	if len(roots) == 0 {
+		return fmt.Errorf("no existing watch directories")
+	}
+	w.watchDirs = roots
+	w.fsWatcher, err = fsnotify.NewWatcher()
+	if err != nil {
 		return err
 	}
 	defer w.fsWatcher.Close()
-
-	// Start handling filesystem events BEFORE initial scan
-	// This ensures we don't miss events that happen during the scan
-	go w.handleFSEvents()
-
-	// Initial scan
-	if err := w.scanDirectory(); err != nil {
-		return err
-	}
-
-	// Wait for batch to flush
-	time.Sleep(time.Duration(w.batchMs*2) * time.Millisecond)
-
-	log.Printf("Initial scan complete. Watching for changes... (Ctrl+C to stop)")
-
-	// Wait for interrupt signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	log.Printf("Shutting down...")
-	close(w.done)
-
-	// Wait for batch sender to drain all queued messages
-	// This ensures no data is lost on shutdown
-	for len(w.lineQueue) > 0 {
-		time.Sleep(time.Duration(w.batchMs) * time.Millisecond)
-	}
-	// One more flush cycle to ensure batch is sent
-	time.Sleep(time.Duration(w.batchMs*2) * time.Millisecond)
-
-	return nil
-}
-
-// arrayFlags allows multiple --watch flags
-type arrayFlags []string
-
-func (a *arrayFlags) String() string {
-	return strings.Join(*a, ",")
-}
-
-func (a *arrayFlags) Set(value string) error {
-	*a = append(*a, value)
-	return nil
-}
-
-// expandPath expands ~ to home directory
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return path
+	ticker := time.NewTicker(time.Duration(w.batchMs) * time.Millisecond)
+	defer ticker.Stop()
+	backoff := 100 * time.Millisecond
+	var retryAt, lastScan, lastPing time.Time
+	dirty := true
+	var stopCancel func() bool
+	disconnect := func() {
+		if stopCancel != nil {
+			stopCancel()
+			stopCancel = nil
 		}
-		return filepath.Join(home, path[1:])
+		if w.conn != nil {
+			w.conn.Close()
+			w.conn = nil
+		}
+		w.files = make(map[string]*FileState) // Next connection must reconcile every file.
 	}
-	return path
+	defer disconnect()
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if w.conn == nil && !time.Now().Before(retryAt) {
+			dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+			conn, _, err := dialer.DialContext(ctx, w.serverURL, nil)
+			if err != nil {
+				log.Printf("Connection failed: %v; retrying in %v", err, backoff)
+				retryAt = time.Now().Add(backoff)
+				backoff = min(backoff*2, 5*time.Second)
+			} else {
+				w.conn = conn
+				// Cancellation interrupts pending socket I/O, not just the outer select.
+				stopCancel = context.AfterFunc(ctx, func() { conn.Close() })
+				lastScan, lastPing = time.Time{}, time.Time{}
+				dirty = true
+				log.Printf("Connected to server: %s", w.serverURL)
+			}
+		}
+		if w.conn != nil {
+			var err error
+			if time.Since(lastPing) >= time.Second {
+				_, err = w.exchange(SyncMessage{Type: "ping"})
+				lastPing = time.Now()
+			}
+			if err == nil && (dirty || time.Since(lastScan) >= time.Second) {
+				initial := lastScan.IsZero()
+				err = w.scanDirectory()
+				if err == nil {
+					lastScan, dirty = time.Now(), false
+					backoff = 100 * time.Millisecond
+					if initial {
+						log.Printf("Initial scan complete. Watching for changes...")
+					}
+				}
+			}
+			if err != nil {
+				log.Printf("Sync interrupted: %v; retrying in %v", err, backoff)
+				disconnect()
+				retryAt = time.Now().Add(backoff)
+				backoff = min(backoff*2, 5*time.Second)
+			}
+		}
+		// Coalesce filesystem events until the next flush tick. Polling is also a
+		// fallback for missed/overflowed events and directories created mid-scan.
+	wait:
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			case event, ok := <-w.fsWatcher.Events:
+				if !ok {
+					return fmt.Errorf("filesystem watcher closed")
+				}
+				dirty = true
+				if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+					delete(w.directories, event.Name)
+				}
+				if strings.HasSuffix(event.Name, ".jsonl") {
+					if rel, _, err := w.getRelPathAndSource(event.Name); err == nil {
+						if state := w.files[normalizePath(rel)]; state != nil {
+							state.info = nil
+						}
+					}
+				}
+			case err, ok := <-w.fsWatcher.Errors:
+				if !ok {
+					return fmt.Errorf("filesystem watcher closed")
+				}
+				log.Printf("Filesystem event error (rescanning): %v", err)
+				dirty = true
+			case <-ticker.C:
+				break wait
+			}
+		}
+	}
+}
+
+func (w *Watcher) Run() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return w.RunContext(ctx)
 }
 
 func main() {
-	var watchDirs arrayFlags
-	flag.Var(&watchDirs, "watch", "Directory to watch with source (format: source:path). Can be specified multiple times.")
+	var specs arrayFlags
+	flag.Var(&specs, "watch", "Directory to watch (source:path or path); may be repeated")
 	serverURL := flag.String("server", "ws://localhost:7164/watch", "WebSocket server URL")
 	batchMs := flag.Int("batch-ms", 100, "Batch interval in milliseconds")
 	usePi := flag.Bool("pi", false, "Watch Pi sessions at ~/.pi/agent/sessions")
 	useClaude := flag.Bool("claude", false, "Watch Claude Code sessions at ~/.claude/projects")
 	flag.Parse()
-
 	var dirs []WatchDir
-
-	// Add built-in watch directories
 	if *usePi {
-		piPath := expandPath("~/.pi/agent/sessions")
-		dirs = append(dirs, WatchDir{Path: piPath, Source: "pi"})
+		dirs = append(dirs, WatchDir{Path: expandPath("~/.pi/agent/sessions"), Source: "pi"})
 	}
-
 	if *useClaude {
-		claudePath := expandPath("~/.claude/projects")
-		dirs = append(dirs, WatchDir{Path: claudePath, Source: "claude"})
+		dirs = append(dirs, WatchDir{Path: expandPath("~/.claude/projects"), Source: "claude"})
 	}
-
-	// Add custom watch directories from --watch flags
-	for _, watchSpec := range watchDirs {
-		// Parse format: source:path
-		parts := strings.SplitN(watchSpec, ":", 2)
-		if len(parts) == 2 {
-			dirs = append(dirs, WatchDir{Path: expandPath(parts[1]), Source: parts[0]})
-		} else {
-			// No source specified, use path as source name
-			path := expandPath(parts[0])
-			source := filepath.Base(path)
-			dirs = append(dirs, WatchDir{Path: path, Source: source})
+	for _, spec := range specs {
+		dir, err := parseWatchSpec(spec)
+		if err != nil {
+			log.Fatal(err)
 		}
+		dirs = append(dirs, dir)
 	}
-
 	if len(dirs) == 0 {
 		log.Fatal("No watch directories specified. Use --pi, --claude, or --watch source:path")
 	}
-
-	log.Printf("Watching %d directories:", len(dirs))
-	for _, d := range dirs {
-		log.Printf("  - %s (%s)", d.Path, d.Source)
-	}
-
-	watcher := NewWatcher(dirs, *serverURL, *batchMs)
-	if err := watcher.Run(); err != nil {
-		log.Fatalf("Watcher failed: %v", err)
+	if err := NewWatcher(dirs, *serverURL, *batchMs).Run(); err != nil {
+		log.Fatal(err)
 	}
 }

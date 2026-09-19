@@ -1053,31 +1053,41 @@
             prettyView.innerHTML = '';
             
             const streamUrl = `/api/sessions/${encodeURIComponent(path)}/stream`;
-            eventSource = new EventSource(streamUrl);
+            const source = new EventSource(streamUrl);
+            eventSource = source;
+            let lastLineNum = 0;
 
-            eventSource.addEventListener('line', (e) => {
+            source.addEventListener('reset', () => {
+                if (eventSource !== source) return;
+                rawLines = [];
+                parsedMessages = [];
+                rawView.innerHTML = '';
+                prettyView.innerHTML = '';
+                lastLineNum = 0;
+            });
+
+            source.addEventListener('line', (e) => {
+                if (eventSource !== source) return;
                 try {
                     const data = JSON.parse(e.data);
+                    if (data.line_num <= lastLineNum) return;
                     handleNewLine(data.line_num, data.line);
+                    lastLineNum = data.line_num;
                 } catch (err) {
                     console.error('Failed to parse SSE event:', err);
                 }
             });
 
-            eventSource.onerror = (e) => {
-                console.error('SSE connection error:', e);
+            source.onerror = () => {
+                if (eventSource !== source) return;
                 viewerStatus.style.color = '#ef4444';
-                viewerStatus.title = 'Connection error';
-                
-                setTimeout(() => {
-                    if (selectedSession === path) {
-                        connectToStream(path);
-                    }
-                }, 2000);
+                viewerStatus.title = 'Reconnecting';
+                // EventSource reconnects with Last-Event-ID. Do not replace it
+                // or clear the transcript: the server resumes this cursor.
             };
 
-            eventSource.onopen = () => {
-                viewerStatus.style.color = '#4ade80';
+            source.onopen = () => {
+                if (eventSource === source) viewerStatus.style.color = '#4ade80';
             };
         }
 
@@ -1117,50 +1127,26 @@
                 globalEventSource.close();
             }
 
-            globalEventSource = new EventSource('/api/stream');
-            
-            globalEventSource.addEventListener('line', (e) => {
+            const source = new EventSource('/api/stream');
+            globalEventSource = source;
+
+            source.addEventListener('sessions', (e) => {
+                if (globalEventSource !== source) return;
                 try {
-                    const data = JSON.parse(e.data);
-                    const existingIdx = sessions.findIndex(s => s.path === data.path);
-                    if (existingIdx >= 0) {
-                        sessions[existingIdx].line_count = data.line_num;
-                        sessions[existingIdx].updated_at = new Date().toISOString();
-                        if (data.source) {
-                            sessions[existingIdx].source = data.source;
-                        }
-                        // Try to extract preview if we don't have one yet
-                        if (!sessions[existingIdx].preview && data.source === 'claude') {
-                            const preview = extractPreviewFromLine(data.line);
-                            if (preview) {
-                                sessions[existingIdx].preview = preview;
-                            }
-                        }
-                    } else {
-                        const newSession = {
-                            path: data.path,
-                            line_count: data.line_num,
-                            updated_at: new Date().toISOString(),
-                            source: data.source || 'other'
-                        };
-                        // Try to extract preview from first line
-                        if (data.source === 'claude') {
-                            const preview = extractPreviewFromLine(data.line);
-                            if (preview) {
-                                newSession.preview = preview;
-                            }
-                        }
-                        sessions.push(newSession);
-                        sortSessions(); // Re-sort when new session is added
-                    }
+                    // Complete metadata snapshots include source labels and Claude
+                    // previews, and reconcile reconnects and smaller histories.
+                    sessions = JSON.parse(e.data);
+                    sortSessions();
                     renderSessionList();
+                    errorBanner.classList.remove('visible');
                 } catch (err) {
-                    console.error('Failed to parse global SSE event:', err);
+                    console.error('Failed to parse session snapshot:', err);
                 }
             });
 
-            globalEventSource.onerror = () => {
-                setTimeout(connectGlobalStream, 2000);
+            source.onerror = () => {
+                if (globalEventSource === source) errorBanner.classList.add('visible');
+                // Native EventSource owns reconnect; no competing retry timers.
             };
         }
 

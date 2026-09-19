@@ -17,7 +17,7 @@ A lightweight system to watch agent sessions as they happen, with <500ms latency
 ### 1. Start the server
 ```bash
 cd server
-go run main.go
+go run .
 ```
 Server starts at `http://localhost:7164`
 
@@ -25,12 +25,12 @@ Server starts at `http://localhost:7164`
 ```bash
 cd watcher
 # Watch both Pi and Claude Code sessions
-go run main.go --pi --claude
+go run . --pi --claude
 
 # Or watch a specific source
-go run main.go --pi                                    # Pi sessions only
-go run main.go --claude                                # Claude Code sessions only
-go run main.go --watch custom:/path/to/sessions        # Custom source
+go run . --pi                                    # Pi sessions only
+go run . --claude                                # Claude Code sessions only
+go run . --watch custom:/path/to/sessions         # Custom source
 ```
 
 ### 3. Open your browser
@@ -51,18 +51,20 @@ session.jsonl  →   & streams      →   & broadcasts   →   live in HTML
 
 ## Features (MVP)
 
-✅ Recursive directory watching for .jsonl files
-✅ Real-time streaming (<500ms latency)
-✅ Multiple concurrent sessions
-✅ Multiple browser viewers
-✅ Auto-scroll with manual override
-✅ Automatic reconnection on network issues
-✅ Multi-source support (Pi and Claude Code sessions)
-✅ Source-aware pretty rendering (different formats per source)
+- ✅ Recursive directory watching for .jsonl files
+- ✅ Real-time streaming (<500ms latency target)
+- ✅ Multiple concurrent sessions and browser viewers
+- ✅ Auto-scroll with manual override
+- ✅ Acknowledged batches and prefix reconciliation after disconnects/restarts
+- ✅ Complete-record handling and file replacement detection
+- ✅ Cursor-based browser replay without slow-viewer backpressure
+- ✅ Multi-source support for Pi, Claude Code, and custom watch directories
+- ✅ Raw and source-aware pretty views, including tool results and usage
+- ❌ No authentication (the server currently binds all interfaces)
+- ❌ No server-side persistence (history is rebuilt from available watched files)
+- ❌ No search/filtering
 
-❌ No authentication (localhost only)
-❌ No persistence (data lost on restart)
-❌ No search/filtering  
+Upgrade watcher and server together: the acknowledged protocol replaces the original fire-and-forget `line` messages. See [recovery and streaming semantics](devdocs/reliability.md).
 
 ## Usage
 
@@ -175,35 +177,44 @@ Response:
 GET /api/sessions/{path}/stream
 
 Response (SSE):
+id: <generation>:121
 event: line
 data: {"path":"pi/session.jsonl","line":"{\"event\":\"new\"}","line_num":121,"source":"pi"}
 ```
 
 ### WebSocket Protocol (Watcher ↔ Server)
 
-**Watcher sends**:
+The watcher first sends `sync` with a stable source ID and relative path. The server returns a generation, committed byte offset and SHA-256 prefix digest. Matching prefixes resume; mismatches use a conditional `reset` before replay.
+
+**Watcher sends a batch**:
 ```json
 {
-  "type": "line",
+  "type": "append",
+  "source": "pi",
+  "source_id": "<stable-watch-root-id>",
   "path": "pi/session.jsonl",
-  "line": "{\"event\":\"tool_call\"}\n",
-  "source": "pi"
+  "mod_time": "2026-01-04T10:15:30Z",
+  "generation": "<generation-from-sync>",
+  "offset": 0,
+  "lines": ["{\"event\":\"tool_call\"}\n"]
 }
 ```
+
+Every batch is acknowledged after commit. Offsets include original terminating newline bytes. Only complete newline-terminated records are ingested. See `devdocs/reliability.md` for ACKs, reset behavior, and SSE resume semantics.
 
 ## Development
 
 ### Running Tests
 
-See `devdocs/mvp/tests.md` for comprehensive test suite.
+Run `make test` for server/watcher unit tests and end-to-end integration tests. Run `make test-ui` for UI stream-state tests (Node.js 18+, no npm dependencies). See `devdocs/reliability.md` for regression coverage.
 
 **Quick test**:
 ```bash
 # Terminal 1: Start server
-cd server && go run main.go
+cd server && go run .
 
 # Terminal 2: Start watcher with test data
-cd watcher && go run main.go --watch ../test-sessions/single --server ws://localhost:7164/watch
+cd watcher && go run . --watch ../test-sessions/single --server ws://localhost:7164/watch
 
 # Terminal 3: Append to test file
 echo '{"event":"test"}' >> test-sessions/single/session1.jsonl
@@ -261,19 +272,21 @@ EOF
 
 ## Limitations (MVP)
 
-1. **No persistence** - Restart = data loss (use syncthing or similar for backups)
-2. **No auth** - Localhost only, anyone can connect
+1. **No server persistence** - Restarts require a connected watcher and the original files to rebuild history. Keep those files until recovery completes.
+2. **No auth** - Binding/origin behavior is unchanged; do not expose this server to untrusted networks
 3. **In-memory only** - Large sessions consume RAM
 4. **No filtering** - Shows all lines, no search
-5. **No parsing** - Displays raw JSONL, no pretty formatting
+5. **Partial parsing** - Pretty view supports common Pi events; full branch/context interpretation is not implemented
 
 These will be addressed in future phases.
 
 ## Future Enhancements
 
 ### Phase 2: Reliability
-- [ ] State persistence (resume from last position)
-- [ ] Sync protocol (hello/sync handshake)
+- [x] Resume from the acknowledged server prefix
+- [x] Sync/reset protocol with idempotent retries
+- [x] Browser cursors and nonblocking history catch-up
+- [ ] Optional durable server storage
 - [ ] Compression for bulk transfers
 - [ ] Better logging
 
@@ -292,9 +305,9 @@ These will be addressed in future phases.
 
 ## Documentation
 
-- `devdocs/mvp/design.md` - Complete architecture and specifications
-- `devdocs/mvp/tests.md` - Comprehensive test suite
-- `devdocs/mvp/implementation.md` - Implementation guide
+- `devdocs/design.md` - Original architecture and specifications
+- `devdocs/reliability.md` - Current ingestion/recovery protocol, streaming, and validation
+- `devdocs/archive/mvp.md` - Original implementation history
 - `README.md` - This file
 
 ## Contributing
