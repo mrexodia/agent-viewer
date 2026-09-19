@@ -8,7 +8,7 @@ export default function (pi: HookAPI) {
         customType: "devdocs",
         content: `Set up devdocs for this project:
 1. Analyze the codebase and create initial reference documentation in devdocs/
-2. Review recent git history for in-progress work that should become bd issues
+2. Review recent git history for in-progress work to record in devdocs/ plans
 3. Update devdocs/README.md with the new documentation
 
 Ask me before creating any files.`,
@@ -38,7 +38,7 @@ Ask me before creating any files.`,
 After gathering context, consolidate into:
 - \`devdocs/${args}/design.md\`
 - \`devdocs/${args}/plan.md\`
-- bd issues for tracking`,
+- A deliverables checklist and dependencies in the plan`,
         display: true,
       }, { triggerTurn: true });
     }
@@ -54,7 +54,7 @@ After gathering context, consolidate into:
       pi.sendMessage({
         customType: "devdocs",
         content: `Archive the "${args}" epic:
-1. Verify all bd issues are closed
+1. Verify all plan checklist items are complete
 2. Extract key learnings to devdocs/archive/${args}.md:
    - Goal and scope (1 paragraph)
    - Key architectural decisions
@@ -77,7 +77,7 @@ After gathering context, consolidate into:
       pi.sendMessage({
         customType: "devdocs",
         content: `Show the current project status:
-- Open bd issues and blockers (run bd ready, bd list --status=open)
+- Open checklist items and blockers in devdocs/ plans
 - Active epics in devdocs/ and their current phase
 - Any stale or outdated documentation
 - Update devdocs/README.md if out of sync`,
